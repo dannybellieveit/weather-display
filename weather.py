@@ -166,15 +166,21 @@ def render_main(w, wifi):
     draw = ImageDraw.Draw(img)
     
     if not w['ok']:
-        draw.text((80, 110), "No Data", font=load_font(18), fill=(80, 80, 90))
+        draw_wifi(draw, 112, 80, wifi)
+        msg = "No WiFi" if not wifi else "No Data"
+        mw = draw.textlength(msg, font=load_font(18))
+        draw.text(((240 - mw) / 2, 110), msg, font=load_font(18),
+                  fill=(180, 60, 60) if not wifi else (80, 80, 90))
         return img
-    
+
     tc = temp_col(w['temp'])
     
     # Header
     draw.text((12, 8), CITY.upper(), font=load_font(13), fill=(80, 80, 95))
     draw.text((12, 24), time.strftime("%a %d %b"), font=load_font(11), fill=(55, 55, 70))
     draw_wifi(draw, 216, 10, wifi)
+    if not wifi:
+        draw.text((178, 10), "OFFLINE", font=load_font(9), fill=(180, 60, 60))
     draw.line([(12, 42), (228, 42)], fill=(25, 25, 35), width=1)
     
     # Big temperature
