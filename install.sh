@@ -52,6 +52,7 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=$REPO_DIR
+EnvironmentFile=-$REPO_DIR/.env
 ExecStart=/usr/bin/python3 $REPO_DIR/weather.py
 Restart=always
 RestartSec=10
@@ -64,7 +65,7 @@ EOF
 echo "→ Creating update script..."
 sudo tee /usr/local/bin/weather-update > /dev/null << EOF
 #!/bin/bash
-cd $REPO_DIR
+cd "$REPO_DIR"
 git fetch -q origin main
 LOCAL=\$(git rev-parse HEAD)
 REMOTE=\$(git rev-parse origin/main)
