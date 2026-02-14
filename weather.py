@@ -12,7 +12,7 @@ Right screen (0.96" 160x80): Sun times
 import os, sys, time, logging, urllib.request, json, subprocess, math
 import spidev as SPI
 
-sys.path.append(os.path.expanduser('~/Zero_LCD_HAT_A_Demo/python'))
+sys.path.append('/home/danny/Zero_LCD_HAT_A_Demo/python')
 from lib import LCD_1inch3, LCD_0inch96
 from PIL import Image, ImageDraw, ImageFont
 
@@ -32,7 +32,7 @@ LAT, LON, CITY = 51.4279, -0.1255, "Streatham"
 UPDATE_SECONDS = 300
 
 # ── Fonts ─────────────────────────────────────────────────────────────────────
-FONT_DIR = os.path.expanduser('~/Zero_LCD_HAT_A_Demo/python/Font')
+FONT_DIR = '/home/danny/Zero_LCD_HAT_A_Demo/python/Font'
 
 def f(size):
     try:    return ImageFont.truetype(os.path.join(FONT_DIR, 'Font00.ttf'), size)
