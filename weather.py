@@ -6,12 +6,18 @@ Custom Design by Danny
 https://github.com/dannybellieveit/weather-display
 
 Main screen (1.3" 240x240): Current conditions with UV, high/low, time
-Left screen  (0.96" 160x80): Humidity & Wind
-Right screen (0.96" 160x80): Sun times
+Left screen  (0.96" 160x80): Humidity & Wind / Sun times (swaps hourly)
+Right screen (0.96" 160x80): Sun times / Humidity & Wind (swaps hourly)
+
+Burn-in prevention:
+- Auto-dim to 20% after 2 minutes
+- KEY1 button to wake
+- Screens swap every hour
 """
 
 import os, sys, time, logging, urllib.request, json, subprocess, math
 import spidev as SPI
+import RPi.GPIO as GPIO
 
 WAVESHARE_DIR = os.path.join(os.path.expanduser('~'), 'Zero_LCD_HAT_A_Demo', 'python')
 sys.path.append(WAVESHARE_DIR)
@@ -25,13 +31,18 @@ log = logging.getLogger(__name__)
 RST_MAIN, DC_MAIN, BL_MAIN, BUS_MAIN, DEV_MAIN = 27, 22, 19, 1, 0
 RST_L,    DC_L,    BL_L,    BUS_L,    DEV_L    = 24,  4, 13, 0, 0
 RST_R,    DC_R,    BL_R,    BUS_R,    DEV_R    = 23,  5, 12, 0, 1
+KEY1_PIN = 25  # Wake button
+KEY2_PIN = 26  # Reserved for page cycling
 
 # ── Config ────────────────────────────────────────────────────────────────────
 BL_MAIN_DUTY = 90   # Main screen brightness (0-100)
 BL_SIDE_DUTY = 45   # Side screens brightness (0-100)
+BL_DIM_DUTY = 18    # Dimmed brightness (20% of normal)
 
 LAT, LON, CITY = 51.4279, -0.1255, "Streatham"
 UPDATE_SECONDS = 300
+DIM_TIMEOUT = 120  # Seconds before auto-dim (2 minutes)
+SWAP_INTERVAL = 3600  # Seconds between screen swaps (1 hour)
 
 # ── Fonts ─────────────────────────────────────────────────────────────────────
 FONT_DIR = os.path.join(WAVESHARE_DIR, 'Font')
@@ -159,7 +170,7 @@ def fetch_weather():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  MAIN SCREEN (240x240) - Final Design
+#  MAIN SCREEN (240x240)
 # ══════════════════════════════════════════════════════════════════════════════
 def render_main(w, wifi):
     img  = Image.new("RGB", (240, 240), (10, 10, 14))
@@ -169,28 +180,27 @@ def render_main(w, wifi):
         draw.text((80, 110), "No Data", font=f(18), fill=(80, 80, 90))
         return img
 
-    # ── Top Left: City & Date ─────────────────────────────────────────────────
+    # Top Left: City & Date
     draw.text((12, 21), CITY.upper(), font=f(13), fill=(80, 95, 95))
     draw.text((12, 37), time.strftime("%a %d %b"), font=f(11), fill=(55, 55, 70))
 
-    # ── Top Right: Low & High ─────────────────────────────────────────────────
-    # Low temp
+    # Top Right: Low & High
     low_text = f"{w['low']}°"
-    low_w = draw.textlength(low_text, font=f(18))
+    bbox = draw.textbbox((0, 0), low_text, font=f(18))
+    low_w = bbox[2] - bbox[0]
     draw.text((169 - low_w/2, 24), low_text, font=f(18), fill=(120, 180, 255))
 
-    # High temp
     high_text = f"{w['high']}°"
-    high_w = draw.textlength(high_text, font=f(18))
+    bbox = draw.textbbox((0, 0), high_text, font=f(18))
+    high_w = bbox[2] - bbox[0]
     draw.text((199 - high_w/2, 24), high_text, font=f(18), fill=(255, 160, 80))
 
     # WiFi indicator
     draw_wifi(draw, 216, 10, wifi)
 
-    # ── Center: Large Temperature (TRULY centered now!) ───────────────────────
+    # Center: Large Temperature (properly centered)
     tc = temp_col(w['temp'])
     temp_text = f"{w['temp']}°"
-    # Calculate exact center position
     bbox = draw.textbbox((0, 0), temp_text, font=f(85))
     text_width = bbox[2] - bbox[0]
     draw.text((120 - text_width/2, 115), temp_text, font=f(85), fill=tc)
@@ -207,11 +217,11 @@ def render_main(w, wifi):
     cond_w = bbox[2] - bbox[0]
     draw.text((120 - cond_w/2, 158), cond, font=f(16), fill=(200, 200, 210))
 
-    # ── Bottom Left: UV Index (out of the way!) ──────────────────────────────
+    # Bottom Left: UV Index
     uv_text = f"UV {w['uv']}"
     draw.text((12, 220), uv_text, font=f(16), fill=uv_col(w['uv']))
 
-    # ── Bottom Center: Time (properly centered!) ──────────────────────────────
+    # Bottom Center: Time (properly centered)
     time_text = time.strftime("%H:%M")
     bbox = draw.textbbox((0, 0), time_text, font=f(16))
     time_w = bbox[2] - bbox[0]
@@ -221,9 +231,9 @@ def render_main(w, wifi):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  LEFT SCREEN (160x80) - Humidity & Wind (centered!)
+#  LEFT/RIGHT SCREENS - Humidity & Wind
 # ══════════════════════════════════════════════════════════════════════════════
-def render_left(w, wifi):
+def render_humidity_wind(w, wifi):
     img  = Image.new("RGB", (160, 80), (10, 10, 14))
     draw = ImageDraw.Draw(img)
 
@@ -241,7 +251,7 @@ def render_left(w, wifi):
     # Separator line
     draw.line([(80, 10), (80, 70)], fill=(25, 25, 35), width=1)
 
-    # Wind (right side - centered in its space!)
+    # Wind (right side - centered)
     draw.text((88, 8), "WIND", font=f(10), fill=(50, 50, 65))
     wind_text = f"{w['wind']}"
     bbox = draw.textbbox((0, 0), wind_text, font=f(28))
@@ -258,9 +268,9 @@ def render_left(w, wifi):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  RIGHT SCREEN (160x80) - Sunrise & Sunset
+#  LEFT/RIGHT SCREENS - Sunrise & Sunset
 # ══════════════════════════════════════════════════════════════════════════════
-def render_right(w, wifi):
+def render_sun_times(w, wifi):
     img  = Image.new("RGB", (160, 80), (10, 10, 14))
     draw = ImageDraw.Draw(img)
 
@@ -288,6 +298,26 @@ def render_right(w, wifi):
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 def main():
+    # Setup GPIO for buttons
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setup(KEY1_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(KEY2_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+    # State tracking
+    last_activity = time.time()
+    is_dimmed = False
+    screens_swapped = False
+    last_swap_time = time.time()
+
+    # Button callback
+    def wake_button_pressed(channel):
+        nonlocal last_activity, is_dimmed
+        last_activity = time.time()
+        if is_dimmed:
+            log.info("Wake button pressed - restoring brightness")
+
+    GPIO.add_event_detect(KEY1_PIN, GPIO.FALLING, callback=wake_button_pressed, bouncetime=300)
+
     log.info("Initialising displays...")
     disp_main = LCD_1inch3.LCD_1inch3(
         spi=SPI.SpiDev(BUS_MAIN, DEV_MAIN), spi_freq=10000000,
@@ -310,11 +340,15 @@ def main():
     weather = {'ok': False}
     last_fetch = 0
 
-    log.info("Weather station ready!")
+    log.info("Weather station ready! (Burn-in protection enabled)")
+    log.info(f"- Auto-dim after {DIM_TIMEOUT}s")
+    log.info(f"- Screen swap every {SWAP_INTERVAL}s")
 
     try:
         while True:
             now = time.time()
+
+            # Fetch weather data
             if now - last_fetch >= UPDATE_SECONDS or last_fetch == 0:
                 log.info("Fetching weather...")
                 new = fetch_weather()
@@ -323,16 +357,47 @@ def main():
                     log.info(f"{weather['temp']}°C {WMO.get(weather['code'], '')}")
                 last_fetch = now
 
+            # Check for screen swap
+            if now - last_swap_time >= SWAP_INTERVAL:
+                screens_swapped = not screens_swapped
+                last_swap_time = now
+                log.info(f"Swapping screens (now: {'swapped' if screens_swapped else 'normal'})")
+
+            # Check for auto-dim
+            inactive_time = now - last_activity
+            should_be_dimmed = inactive_time >= DIM_TIMEOUT
+
+            if should_be_dimmed and not is_dimmed:
+                log.info("Auto-dimming displays")
+                disp_main.bl_DutyCycle(int(BL_MAIN_DUTY * 0.2))
+                disp_left.bl_DutyCycle(int(BL_SIDE_DUTY * 0.2))
+                disp_right.bl_DutyCycle(int(BL_SIDE_DUTY * 0.2))
+                is_dimmed = True
+
+            elif not should_be_dimmed and is_dimmed:
+                log.info("Restoring brightness")
+                disp_main.bl_DutyCycle(BL_MAIN_DUTY)
+                disp_left.bl_DutyCycle(BL_SIDE_DUTY)
+                disp_right.bl_DutyCycle(BL_SIDE_DUTY)
+                is_dimmed = False
+
             wifi = wifi_status()
 
+            # Render screens (swap left/right content)
             disp_main.ShowImage(render_main(weather, wifi))
-            disp_left.ShowImage(render_left(weather, wifi))
-            disp_right.ShowImage(render_right(weather, wifi))
+
+            if screens_swapped:
+                disp_left.ShowImage(render_sun_times(weather, wifi))
+                disp_right.ShowImage(render_humidity_wind(weather, wifi))
+            else:
+                disp_left.ShowImage(render_humidity_wind(weather, wifi))
+                disp_right.ShowImage(render_sun_times(weather, wifi))
 
             time.sleep(30)
 
     except KeyboardInterrupt:
         log.info("Exiting...")
+        GPIO.cleanup()
         for d in [disp_main, disp_left, disp_right]:
             d.clear()
             d.module_exit()
