@@ -44,7 +44,7 @@ UPDATE_SECONDS = 300
 
 # ── Manual Positioning (Adjust these to move the temperature!) ───────────────
 TEMP_X = 90   # X position: adjust to move left/right (0-240)
-TEMP_Y = 60  # Y position: adjust to move up/down (0-240)
+TEMP_Y = 45  # Y position: adjust to move up/down (0-240)
 
 # ── Burn-in Prevention Settings ───────────────────────────────────────────────
 DIM_TIMEOUT = 120    # Seconds before auto-dim (2 minutes)
