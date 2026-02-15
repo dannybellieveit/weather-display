@@ -95,6 +95,15 @@ def wifi_status():
     except: pass
     return False
 
+def center_text(draw, text, font, y, center_x=120):
+    """
+    Perfectly center text horizontally accounting for font metrics.
+    Returns the x position to use with draw.text()
+    """
+    bbox = font.getbbox(text)
+    text_visual_width = bbox[2] - bbox[0]
+    return center_x - (text_visual_width / 2) - bbox[0]
+
 def draw_wifi(draw, x, y, connected, col_on=(80,220,120), col_off=(180,60,60)):
     col = col_on if connected else col_off
     draw.ellipse([x+4,y+9,x+8,y+13], fill=col)
@@ -198,16 +207,11 @@ def render_main(w, wifi):
     # WiFi indicator
     draw_wifi(draw, 216, 10, wifi)
 
-    # Center: Large Temperature (PERFECTLY centered - accounting for font metrics)
+    # Center: Large Temperature
     tc = temp_col(w['temp'])
     temp_text = f"{w['temp']}°"
     font_temp = f(85)
-    # Use font.getbbox to get actual glyph bounds including bearings
-    bbox = font_temp.getbbox(temp_text)
-    # Calculate actual visual center of the text
-    text_visual_width = bbox[2] - bbox[0]
-    # Position text so its visual center is at x=120
-    x_pos = 120 - (text_visual_width / 2) - bbox[0]
+    x_pos = center_text(draw, temp_text, font_temp, 115)
     draw.text((x_pos, 115), temp_text, font=font_temp, fill=tc)
 
     # Feels like (centered)
@@ -304,6 +308,12 @@ def render_sun_times(w, wifi):
 # ── Main loop ─────────────────────────────────────────────────────────────────
 def main():
     # Setup GPIO for buttons
+    GPIO.setwarnings(False)
+    try:
+        GPIO.cleanup([KEY1_PIN, KEY2_PIN])  # Clean up any previous state
+    except:
+        pass
+
     GPIO.setmode(GPIO.BCM)
     GPIO.setup(KEY1_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     GPIO.setup(KEY2_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
@@ -321,7 +331,10 @@ def main():
         if is_dimmed:
             log.info("Wake button pressed - restoring brightness")
 
-    GPIO.add_event_detect(KEY1_PIN, GPIO.FALLING, callback=wake_button_pressed, bouncetime=300)
+    try:
+        GPIO.add_event_detect(KEY1_PIN, GPIO.FALLING, callback=wake_button_pressed, bouncetime=300)
+    except RuntimeError:
+        log.warning("Could not set up button event detection - wake button disabled")
 
     log.info("Initialising displays...")
     disp_main = LCD_1inch3.LCD_1inch3(
