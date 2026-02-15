@@ -198,12 +198,17 @@ def render_main(w, wifi):
     # WiFi indicator
     draw_wifi(draw, 216, 10, wifi)
 
-    # Center: Large Temperature (properly centered)
+    # Center: Large Temperature (PERFECTLY centered - accounting for font metrics)
     tc = temp_col(w['temp'])
     temp_text = f"{w['temp']}°"
-    bbox = draw.textbbox((0, 0), temp_text, font=f(85))
-    text_width = bbox[2] - bbox[0]
-    draw.text((120 - text_width/2, 115), temp_text, font=f(85), fill=tc)
+    font_temp = f(85)
+    # Use font.getbbox to get actual glyph bounds including bearings
+    bbox = font_temp.getbbox(temp_text)
+    # Calculate actual visual center of the text
+    text_visual_width = bbox[2] - bbox[0]
+    # Position text so its visual center is at x=120
+    x_pos = 120 - (text_visual_width / 2) - bbox[0]
+    draw.text((x_pos, 115), temp_text, font=font_temp, fill=tc)
 
     # Feels like (centered)
     feels_text = f"Feels {w['feels']}°"
