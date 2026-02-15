@@ -425,36 +425,12 @@ def render_right_earth(earth_data):
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 def main():
-    # Setup GPIO for buttons
-    GPIO.setwarnings(False)
-
-    # Clean up GPIO completely to avoid conflicts
-    try:
-        GPIO.cleanup()
-    except:
-        pass
-
-    # Small delay to ensure cleanup completes
-    time.sleep(0.1)
-
-    GPIO.setmode(GPIO.BCM)
-    GPIO.setup(KEY1_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    GPIO.setup(KEY2_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-
     # State tracking
     last_activity = time.time()
     is_dimmed = False
     screens_swapped = False
     last_swap_time = time.time()
     current_page = 'weather'  # 'weather' or 'earth'
-
-    # Button state tracking for polling
-    key1_last_state = GPIO.input(KEY1_PIN)
-    key2_last_state = GPIO.input(KEY2_PIN)
-
-    log.info("✓ Using button polling (edge detection not available)")
-    log.info("✓ KEY1 button ready (wake/brightness)")
-    log.info("✓ KEY2 button ready (page cycling)")
 
     log.info("Initialising displays...")
     disp_main = LCD_1inch3.LCD_1inch3(
@@ -475,6 +451,26 @@ def main():
     disp_left.bl_DutyCycle(BL_SIDE_DUTY)
     disp_right.bl_DutyCycle(BL_SIDE_DUTY)
 
+    # Setup buttons using Waveshare's GPIO library
+    key1 = disp_left.gpio_mode(KEY1_PIN, disp_left.INPUT, None)
+    key2 = disp_left.gpio_mode(KEY2_PIN, disp_left.INPUT, None)
+
+    # Button callbacks
+    def key1_callback():
+        nonlocal last_activity
+        last_activity = time.time()
+        log.info("✓ KEY1 pressed - wake button")
+
+    def key2_callback():
+        nonlocal current_page, last_activity
+        current_page = 'earth' if current_page == 'weather' else 'weather'
+        last_activity = time.time()
+        log.info(f"✓ KEY2 pressed - switched to {current_page} page")
+
+    # Attach callbacks to buttons
+    key1.when_activated = key1_callback
+    key2.when_activated = key2_callback
+
     weather = {'ok': False}
     earth_data = {'ok': False}
     last_fetch = 0
@@ -484,30 +480,11 @@ def main():
     log.info(f"- Auto-dim after {DIM_TIMEOUT}s")
     log.info(f"- Screen swap every {SWAP_INTERVAL}s")
     log.info(f"- Press KEY2 to cycle between weather and Earth photo")
+    log.info("✓ Buttons ready using Waveshare GPIO library")
 
     try:
         while True:
             now = time.time()
-
-            # Poll buttons (falling edge detection)
-            key1_state = GPIO.input(KEY1_PIN)
-            key2_state = GPIO.input(KEY2_PIN)
-
-            # KEY1 (wake button) - detect falling edge (1 -> 0)
-            if key1_last_state == 1 and key1_state == 0:
-                last_activity = now
-                if is_dimmed:
-                    log.info("✓ KEY1 pressed - restoring brightness")
-                else:
-                    log.info("✓ KEY1 pressed")
-            key1_last_state = key1_state
-
-            # KEY2 (page cycle) - detect falling edge (1 -> 0)
-            if key2_last_state == 1 and key2_state == 0:
-                current_page = 'earth' if current_page == 'weather' else 'weather'
-                last_activity = now
-                log.info(f"✓ KEY2 pressed - switched to {current_page} page")
-            key2_last_state = key2_state
 
             # Fetch weather data
             if now - last_fetch >= UPDATE_SECONDS or last_fetch == 0:
@@ -569,7 +546,7 @@ def main():
                     disp_left.ShowImage(render_humidity_wind(weather, wifi))
                     disp_right.ShowImage(render_sun_times(weather, wifi))
 
-            time.sleep(0.5)  # Check buttons frequently for responsiveness
+            time.sleep(30)  # Update displays every 30 seconds
 
     except KeyboardInterrupt:
         log.info("Exiting...")
