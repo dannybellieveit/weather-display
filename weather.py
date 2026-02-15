@@ -401,19 +401,14 @@ def render_main(w, wifi):
     feels_w = bbox[2] - bbox[0]
     draw.text((120 - feels_w/2, 138), feels_text, font=f(18), fill=(200, 200, 200))
 
-    # Condition (centered)
+    # Condition with precipitation duration on one line (e.g. "Rain for ~3h")
     cond = WMO.get(w['code'], 'Unknown')
+    precip_dur = w.get('precip_duration')
+    if precip_dur:
+        cond = f"{cond} for {precip_dur}"
     bbox = draw.textbbox((0, 0), cond, font=f(20))
     cond_w = bbox[2] - bbox[0]
     draw.text((120 - cond_w/2, 158), cond, font=f(20), fill=(200, 200, 210))
-
-    # Precipitation duration (shown below condition when raining/snowing)
-    precip_dur = w.get('precip_duration')
-    if precip_dur:
-        dur_text = f"for {precip_dur}"
-        bbox = draw.textbbox((0, 0), dur_text, font=f(16))
-        dur_w = bbox[2] - bbox[0]
-        draw.text((120 - dur_w/2, 180), dur_text, font=f(16), fill=(140, 160, 200))
 
     # Bottom Left: UV Index
     uv_text = f"UV {w['uv']}"
