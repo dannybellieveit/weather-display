@@ -42,8 +42,8 @@ LAT, LON, CITY = 51.4279, -0.1255, "Streatham"
 UPDATE_SECONDS = 300
 
 # ── Manual Positioning (Adjust these to move the temperature!) ───────────────
-TEMP_X = 120   # X position: adjust to move left/right (0-240)
-TEMP_Y = 120  # Y position: adjust to move up/down (0-240)
+TEMP_X = 95   # X position: adjust to move left/right (0-240)
+TEMP_Y = 0  # Y position: adjust to move up/down (0-240)
 
 # ── Burn-in Prevention Settings ───────────────────────────────────────────────
 DIM_TIMEOUT = 120    # Seconds before auto-dim (2 minutes)
