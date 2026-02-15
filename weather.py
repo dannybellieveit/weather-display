@@ -34,14 +34,19 @@ RST_R,    DC_R,    BL_R,    BUS_R,    DEV_R    = 23,  5, 12, 0, 1
 KEY1_PIN = 25  # Wake button
 KEY2_PIN = 26  # Reserved for page cycling
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# ── Display Settings ──────────────────────────────────────────────────────────
 BL_MAIN_DUTY = 90   # Main screen brightness (0-100)
 BL_SIDE_DUTY = 45   # Side screens brightness (0-100)
-BL_DIM_DUTY = 18    # Dimmed brightness (20% of normal)
 
 LAT, LON, CITY = 51.4279, -0.1255, "Streatham"
 UPDATE_SECONDS = 300
-DIM_TIMEOUT = 120  # Seconds before auto-dim (2 minutes)
+
+# ── Manual Positioning (Adjust these to move the temperature!) ───────────────
+TEMP_X = 50   # X position: adjust to move left/right (0-240)
+TEMP_Y = 115  # Y position: adjust to move up/down (0-240)
+
+# ── Burn-in Prevention Settings ───────────────────────────────────────────────
+DIM_TIMEOUT = 120    # Seconds before auto-dim (2 minutes)
 SWAP_INTERVAL = 3600  # Seconds between screen swaps (1 hour)
 
 # ── Fonts ─────────────────────────────────────────────────────────────────────
@@ -95,14 +100,6 @@ def wifi_status():
     except: pass
     return False
 
-def center_text(draw, text, font, y, center_x=120):
-    """
-    Perfectly center text horizontally accounting for font metrics.
-    Returns the x position to use with draw.text()
-    """
-    bbox = font.getbbox(text)
-    text_visual_width = bbox[2] - bbox[0]
-    return center_x - (text_visual_width / 2) - bbox[0]
 
 def draw_wifi(draw, x, y, connected, col_on=(80,220,120), col_off=(180,60,60)):
     col = col_on if connected else col_off
@@ -207,12 +204,10 @@ def render_main(w, wifi):
     # WiFi indicator
     draw_wifi(draw, 216, 10, wifi)
 
-    # Center: Large Temperature
+    # Large Temperature - ADJUST TEMP_X and TEMP_Y AT TOP OF FILE TO POSITION
     tc = temp_col(w['temp'])
     temp_text = f"{w['temp']}°"
-    font_temp = f(85)
-    x_pos = center_text(draw, temp_text, font_temp, 115)
-    draw.text((x_pos, 115), temp_text, font=font_temp, fill=tc)
+    draw.text((TEMP_X, TEMP_Y), temp_text, font=f(85), fill=tc)
 
     # Feels like (centered)
     feels_text = f"Feels {w['feels']}°"
