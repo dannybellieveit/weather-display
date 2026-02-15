@@ -302,8 +302,8 @@ def render_main(w, wifi):
         return img
 
     # Top Left: City & Date
-    draw.text((12, 21), CITY.upper(), font=f(18), fill=(200, 200, 200))
-    draw.text((12, 37), time.strftime("%a %d %b"), font=f(16), fill=(150, 150, 150))
+    draw.text((12, 10), CITY.upper(), font=f(18), fill=(200, 200, 200))
+    draw.text((12, 24), time.strftime("%a %d %b"), font=f(16), fill=(150, 150, 150))
 
     # Top Right: Low & High
     low_text = f"{w['low']}°"
