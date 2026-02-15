@@ -78,12 +78,40 @@ SWAP_INTERVAL = 3600  # Seconds between screen swaps (1 hour)
 
 # ── Fonts ─────────────────────────────────────────────────────────────────────
 FONT_DIR = os.path.join(WAVESHARE_DIR, 'Font')
+TATE_FONT_URL = 'https://www.tate.org.uk/static/fonts/TateNewPro-Regular.5af49f1c9910.woff'
+TATE_FONT_PATH = os.path.join(os.path.expanduser('~'), '.cache', 'weather-display', 'TateNewPro-Regular.woff')
+
+def _download_tate_font():
+    """Download Tate font once and cache locally."""
+    if os.path.exists(TATE_FONT_PATH):
+        return True
+    try:
+        os.makedirs(os.path.dirname(TATE_FONT_PATH), exist_ok=True)
+        log.info(f"Downloading Tate font...")
+        with urllib.request.urlopen(TATE_FONT_URL, timeout=15) as r:
+            data = r.read()
+        with open(TATE_FONT_PATH, 'wb') as fout:
+            fout.write(data)
+        log.info(f"Tate font cached at {TATE_FONT_PATH}")
+        return True
+    except Exception as e:
+        log.warning(f"Failed to download Tate font: {e}")
+        return False
+
+# Try downloading Tate font at startup
+_tate_font_available = _download_tate_font()
 
 def f(size):
+    # Prefer Tate font, fall back to bundled Font00.ttf, then PIL default
+    if _tate_font_available:
+        try:
+            return ImageFont.truetype(TATE_FONT_PATH, size)
+        except (FileNotFoundError, OSError):
+            pass
     try:
         return ImageFont.truetype(os.path.join(FONT_DIR, 'Font00.ttf'), size)
-    except (FileNotFoundError, OSError) as e:
-        log.warning(f"Font not found at {FONT_DIR}/Font00.ttf, using default font")
+    except (FileNotFoundError, OSError):
+        log.warning("No fonts available, using default font")
         return ImageFont.load_default()
 
 # ── Weather codes ─────────────────────────────────────────────────────────────
@@ -190,32 +218,75 @@ def draw_sunset(draw, cx, cy, r=12):
         y2 = cy - int((r-2+ray_len) * math.sin(rad))
         draw.line([(x1, y1), (x2, y2)], fill=ray_col, width=2)
 
+# WMO codes that indicate precipitation (rain, drizzle, showers, thunderstorms, snow)
+PRECIP_CODES = {51, 53, 55, 61, 63, 65, 80, 81, 82, 95, 96, 99}
+SNOW_CODES = {71, 73, 75, 77, 85, 86}
+
+def _calc_precip_duration(hourly, current_code):
+    """Calculate how long precipitation will last from now, using hourly forecasts.
+    Returns a string like '2h', '30min', or None if not precipitating."""
+    if current_code not in PRECIP_CODES and current_code not in SNOW_CODES:
+        return None
+
+    times = hourly.get('time', [])
+    codes = hourly.get('weather_code', [])
+    if not times or not codes:
+        return None
+
+    # Find the current hour index
+    now_str = time.strftime('%Y-%m-%dT%H:00')
+    try:
+        start_idx = next(i for i, t in enumerate(times) if t >= now_str)
+    except StopIteration:
+        return None
+
+    # Count consecutive hours with precipitation from now
+    all_precip = PRECIP_CODES | SNOW_CODES
+    hours = 0
+    for i in range(start_idx, len(codes)):
+        if int(codes[i]) in all_precip:
+            hours += 1
+        else:
+            break
+
+    if hours <= 0:
+        return None
+    if hours == 1:
+        return "~1h"
+    if hours >= len(codes) - start_idx:
+        return f"{hours}h+"
+    return f"~{hours}h"
+
 def fetch_weather():
     url = (
         f"https://api.open-meteo.com/v1/forecast"
         f"?latitude={LAT}&longitude={LON}"
         f"&current=temperature_2m,apparent_temperature,relative_humidity_2m,"
         f"wind_speed_10m,wind_direction_10m,weather_code,uv_index"
+        f"&hourly=weather_code"
         f"&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset"
-        f"&timezone=Europe/London&forecast_days=1"
+        f"&timezone=Europe/London&forecast_days=2"
     )
     try:
         with urllib.request.urlopen(url, timeout=10) as r:
             d = json.loads(r.read())
         c = d['current']
         dl = d['daily']
+        code = int(c['weather_code'])
+        precip_duration = _calc_precip_duration(d.get('hourly', {}), code)
         return {
             'temp':    round(c['temperature_2m']),
             'feels':   round(c['apparent_temperature']),
             'humidity':round(c['relative_humidity_2m']),
             'wind':    round(c['wind_speed_10m']),
             'wdir':    round(c['wind_direction_10m']),
-            'code':    int(c['weather_code']),
+            'code':    code,
             'uv':      round(c.get('uv_index', 0)),
             'high':    round(dl['temperature_2m_max'][0]),
             'low':     round(dl['temperature_2m_min'][0]),
             'sunrise': dl['sunrise'][0][11:16],
             'sunset':  dl['sunset'][0][11:16],
+            'precip_duration': precip_duration,
             'ok': True,
         }
     except Exception as e:
@@ -335,6 +406,14 @@ def render_main(w, wifi):
     bbox = draw.textbbox((0, 0), cond, font=f(20))
     cond_w = bbox[2] - bbox[0]
     draw.text((120 - cond_w/2, 158), cond, font=f(20), fill=(200, 200, 210))
+
+    # Precipitation duration (shown below condition when raining/snowing)
+    precip_dur = w.get('precip_duration')
+    if precip_dur:
+        dur_text = f"for {precip_dur}"
+        bbox = draw.textbbox((0, 0), dur_text, font=f(16))
+        dur_w = bbox[2] - bbox[0]
+        draw.text((120 - dur_w/2, 180), dur_text, font=f(16), fill=(140, 160, 200))
 
     # Bottom Left: UV Index
     uv_text = f"UV {w['uv']}"
@@ -595,6 +674,7 @@ def main():
             weather.get('low'),
             weather.get('sunrise'),
             weather.get('sunset'),
+            weather.get('precip_duration'),
             weather.get('ok')
         )
         earth_tuple = (
