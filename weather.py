@@ -334,17 +334,17 @@ def render_main(w, wifi):
     cond = WMO.get(w['code'], 'Unknown')
     bbox = draw.textbbox((0, 0), cond, font=f(16))
     cond_w = bbox[2] - bbox[0]
-    draw.text((120 - cond_w/2, 158), cond, font=f(16), fill=(200, 200, 210))
+    draw.text((120 - cond_w/2, 158), cond, font=f(20), fill=(200, 200, 210))
 
     # Bottom Left: UV Index
     uv_text = f"UV {w['uv']}"
-    draw.text((12, 220), uv_text, font=f(16), fill=uv_col(w['uv']))
+    draw.text((12, 220), uv_text, font=f(20), fill=uv_col(w['uv']))
 
     # Bottom Center: Time (properly centered)
     time_text = time.strftime("%H:%M")
     bbox = draw.textbbox((0, 0), time_text, font=f(16))
     time_w = bbox[2] - bbox[0]
-    draw.text((120 - time_w/2, 220), time_text, font=f(16), fill=(224, 224, 224))
+    draw.text((120 - time_w/2, 220), time_text, font=f(30), fill=(224, 224, 224))
 
     return img
 
