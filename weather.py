@@ -43,8 +43,8 @@ LAT, LON, CITY = 51.4279, -0.1255, "Streatham"
 UPDATE_SECONDS = 300
 
 # ── Manual Positioning (Adjust these to move the temperature!) ───────────────
-TEMP_X = 40   # X position: adjust to move left/right (0-240)
-TEMP_Y = 95  # Y position: adjust to move up/down (0-240)
+TEMP_X = 50   # X position: adjust to move left/right (0-240)
+TEMP_Y = 115  # Y position: adjust to move up/down (0-240)
 
 # ── Burn-in Prevention Settings ───────────────────────────────────────────────
 DIM_TIMEOUT = 120    # Seconds before auto-dim (2 minutes)
@@ -448,33 +448,13 @@ def main():
     last_swap_time = time.time()
     current_page = 'weather'  # 'weather' or 'earth'
 
-    # Button callbacks
-    def wake_button_pressed(channel):
-        nonlocal last_activity, is_dimmed
-        last_activity = time.time()
-        if is_dimmed:
-            log.info("✓ KEY1 pressed - restoring brightness")
-        else:
-            log.info("✓ KEY1 pressed")
+    # Button state tracking for polling
+    key1_last_state = GPIO.input(KEY1_PIN)
+    key2_last_state = GPIO.input(KEY2_PIN)
 
-    def page_cycle_pressed(channel):
-        nonlocal current_page, last_activity
-        current_page = 'earth' if current_page == 'weather' else 'weather'
-        last_activity = time.time()  # Reset activity timer when changing pages
-        log.info(f"✓ KEY2 pressed - switched to {current_page} page")
-
-    # Set up button event detection with better error handling
-    try:
-        GPIO.add_event_detect(KEY1_PIN, GPIO.FALLING, callback=wake_button_pressed, bouncetime=300)
-        log.info("✓ KEY1 button ready (wake/brightness)")
-    except RuntimeError as e:
-        log.error(f"✗ Failed to set up KEY1: {e}")
-
-    try:
-        GPIO.add_event_detect(KEY2_PIN, GPIO.FALLING, callback=page_cycle_pressed, bouncetime=300)
-        log.info("✓ KEY2 button ready (page cycling)")
-    except RuntimeError as e:
-        log.error(f"✗ Failed to set up KEY2: {e}")
+    log.info("✓ Using button polling (edge detection not available)")
+    log.info("✓ KEY1 button ready (wake/brightness)")
+    log.info("✓ KEY2 button ready (page cycling)")
 
     log.info("Initialising displays...")
     disp_main = LCD_1inch3.LCD_1inch3(
@@ -508,6 +488,26 @@ def main():
     try:
         while True:
             now = time.time()
+
+            # Poll buttons (falling edge detection)
+            key1_state = GPIO.input(KEY1_PIN)
+            key2_state = GPIO.input(KEY2_PIN)
+
+            # KEY1 (wake button) - detect falling edge (1 -> 0)
+            if key1_last_state == 1 and key1_state == 0:
+                last_activity = now
+                if is_dimmed:
+                    log.info("✓ KEY1 pressed - restoring brightness")
+                else:
+                    log.info("✓ KEY1 pressed")
+            key1_last_state = key1_state
+
+            # KEY2 (page cycle) - detect falling edge (1 -> 0)
+            if key2_last_state == 1 and key2_state == 0:
+                current_page = 'earth' if current_page == 'weather' else 'weather'
+                last_activity = now
+                log.info(f"✓ KEY2 pressed - switched to {current_page} page")
+            key2_last_state = key2_state
 
             # Fetch weather data
             if now - last_fetch >= UPDATE_SECONDS or last_fetch == 0:
@@ -569,7 +569,7 @@ def main():
                     disp_left.ShowImage(render_humidity_wind(weather, wifi))
                     disp_right.ShowImage(render_sun_times(weather, wifi))
 
-            time.sleep(30)
+            time.sleep(0.5)  # Check buttons frequently for responsiveness
 
     except KeyboardInterrupt:
         log.info("Exiting...")
