@@ -15,7 +15,7 @@ Burn-in prevention:
 - Screens swap every hour
 """
 
-import os, sys, time, logging, urllib.request, json, subprocess, math
+import os, sys, time, logging, urllib.request, json, subprocess, math, threading
 import spidev as SPI
 import RPi.GPIO as GPIO
 from io import BytesIO
@@ -27,6 +27,23 @@ from PIL import Image, ImageDraw, ImageFont
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
 log = logging.getLogger(__name__)
+
+# ── Optimization: Caching & Double Buffering ──────────────────────────────────
+# Trick #2: Pre-rendered Image Caching - cache resized Earth images
+earth_image_cache = {
+    'data': None,
+    'resized_240': None,  # Cached 240x240 version for main screen
+    'timestamp': 0
+}
+
+# Trick #5: Double Buffering - pre-rendered frames for instant page switching
+frame_buffers = {
+    'weather': {'main': None, 'left': None, 'right': None},
+    'earth': {'main': None, 'left': None, 'right': None}
+}
+
+# Lock for thread-safe buffer updates
+buffer_lock = threading.Lock()
 
 # ── Pins ──────────────────────────────────────────────────────────────────────
 RST_MAIN, DC_MAIN, BL_MAIN, BUS_MAIN, DEV_MAIN = 27, 22, 19, 1, 0
@@ -176,7 +193,7 @@ def fetch_weather():
         return {'ok': False}
 
 def fetch_earth_photo():
-    """Fetch latest Earth photo from NASA EPIC API"""
+    """Fetch latest Earth photo from NASA EPIC API with caching (Trick #2)"""
     try:
         log.info("Fetching latest Earth photo from NASA EPIC...")
         api_url = "https://epic.gsfc.nasa.gov/api/natural"
@@ -211,6 +228,12 @@ def fetch_earth_photo():
         coords = latest.get('centroid_coordinates', {})
         lat = coords.get('lat', 0)
         lon = coords.get('lon', 0)
+
+        # OPTIMIZATION: Cache the resized image ONCE instead of resizing every render
+        log.info("Caching resized Earth image (240x240)...")
+        earth_image_cache['data'] = earth_img
+        earth_image_cache['resized_240'] = earth_img.resize((240, 240), Image.LANCZOS)
+        earth_image_cache['timestamp'] = time.time()
 
         return {
             'ok': True,
@@ -362,10 +385,15 @@ def render_main_earth(earth_data):
         draw.text((50, 130), "photo available", font=f(14), fill=(60, 60, 70))
         return img
 
-    # Resize Earth image to fit screen (240x240)
-    earth_img = earth_data['image']
-    earth_img = earth_img.resize((240, 240), Image.LANCZOS)
-    return earth_img
+    # OPTIMIZATION: Use cached resized image instead of resizing every render (Trick #2)
+    # This eliminates expensive LANCZOS resampling on every 5-second cycle
+    if earth_image_cache['resized_240'] is not None:
+        return earth_image_cache['resized_240']
+    else:
+        # Fallback: resize on-the-fly if cache is empty
+        earth_img = earth_data['image']
+        earth_img = earth_img.resize((240, 240), Image.LANCZOS)
+        return earth_img
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -423,6 +451,37 @@ def render_right_earth(earth_data):
     return img
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  OPTIMIZATION HELPERS (Tricks #1, #4, #5)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Trick #4: Async background fetching - prevents blocking on network timeouts
+def fetch_weather_async(weather_ref, last_fetch_ref):
+    """Async wrapper for weather fetching"""
+    def _fetch():
+        log.info("Fetching weather (async)...")
+        new = fetch_weather()
+        if new['ok']:
+            weather_ref['data'] = new
+            weather_ref['last_fetch'] = time.time()
+            log.info(f"{new['temp']}°C {WMO.get(new['code'], '')}")
+
+    threading.Thread(target=_fetch, daemon=True).start()
+
+
+def fetch_earth_async(earth_ref, last_fetch_ref):
+    """Async wrapper for Earth photo fetching"""
+    def _fetch():
+        log.info("Fetching Earth photo (async)...")
+        new_earth = fetch_earth_photo()
+        if new_earth['ok']:
+            earth_ref['data'] = new_earth
+            earth_ref['last_fetch'] = time.time()
+            log.info(f"Earth photo updated: {new_earth['date']}")
+
+    threading.Thread(target=_fetch, daemon=True).start()
+
+
 # ── Main loop ─────────────────────────────────────────────────────────────────
 def main():
     # State tracking
@@ -455,6 +514,43 @@ def main():
     key1 = disp_left.gpio_mode(KEY1_PIN, disp_left.INPUT, None)
     key2 = disp_left.gpio_mode(KEY2_PIN, disp_left.INPUT, None)
 
+    # Data references for async fetching (Trick #4)
+    weather_ref = {'data': {'ok': False}, 'last_fetch': 0}
+    earth_ref = {'data': {'ok': False}, 'last_fetch': 0}
+
+    # Trick #5: Double Buffering - helper to update frame buffers
+    def update_frame_buffers():
+        """Pre-render both pages into buffers for instant switching"""
+        with buffer_lock:
+            wifi = wifi_status()
+            weather = weather_ref['data']
+            earth_data = earth_ref['data']
+
+            # Render weather page
+            frame_buffers['weather']['main'] = render_main(weather, wifi)
+            if screens_swapped:
+                frame_buffers['weather']['left'] = render_sun_times(weather, wifi)
+                frame_buffers['weather']['right'] = render_humidity_wind(weather, wifi)
+            else:
+                frame_buffers['weather']['left'] = render_humidity_wind(weather, wifi)
+                frame_buffers['weather']['right'] = render_sun_times(weather, wifi)
+
+            # Render earth page
+            frame_buffers['earth']['main'] = render_main_earth(earth_data)
+            frame_buffers['earth']['left'] = render_left_earth(earth_data)
+            frame_buffers['earth']['right'] = render_right_earth(earth_data)
+
+    # Trick #1: Event-Driven Rendering - immediate render on button press
+    def render_current_page_now():
+        """Immediately render and display current page (called on button press)"""
+        with buffer_lock:
+            page_buffer = frame_buffers.get(current_page)
+            if page_buffer and page_buffer['main']:
+                disp_main.ShowImage(page_buffer['main'])
+                disp_left.ShowImage(page_buffer['left'])
+                disp_right.ShowImage(page_buffer['right'])
+                log.info(f"✓ Instant page render: {current_page}")
+
     # Button callbacks
     def key1_callback():
         nonlocal last_activity
@@ -466,42 +562,36 @@ def main():
         current_page = 'earth' if current_page == 'weather' else 'weather'
         last_activity = time.time()
         log.info(f"✓ KEY2 pressed - switched to {current_page} page")
+        # Trick #1: Immediate render on button press - no waiting for loop!
+        render_current_page_now()
 
     # Attach callbacks to buttons
     key1.when_activated = key1_callback
     key2.when_activated = key2_callback
 
-    weather = {'ok': False}
-    earth_data = {'ok': False}
-    last_fetch = 0
-    last_earth_fetch = 0
-
-    log.info("Weather station ready! (Burn-in protection enabled)")
+    log.info("Weather station ready! (Burn-in protection + OPTIMIZATIONS enabled)")
     log.info(f"- Auto-dim after {DIM_TIMEOUT}s")
     log.info(f"- Screen swap every {SWAP_INTERVAL}s")
     log.info(f"- Press KEY2 to cycle between weather and Earth photo")
     log.info("✓ Buttons ready using Waveshare GPIO library")
+    log.info("✓ OPTIMIZATIONS: Image caching, async fetching, double buffering, instant page switching")
+
+    # Trick #6: Reduce loop sleep from 30s to 5s for more responsive updates
+    LOOP_INTERVAL = 5  # seconds (was 30)
+    loop_count = 0
 
     try:
         while True:
             now = time.time()
+            loop_count += 1
 
-            # Fetch weather data
-            if now - last_fetch >= UPDATE_SECONDS or last_fetch == 0:
-                log.info("Fetching weather...")
-                new = fetch_weather()
-                if new['ok']:
-                    weather = new
-                    log.info(f"{weather['temp']}°C {WMO.get(weather['code'], '')}")
-                last_fetch = now
+            # Trick #4: Async fetch weather data (every 300s = 60 cycles at 5s interval)
+            if now - weather_ref['last_fetch'] >= UPDATE_SECONDS or weather_ref['last_fetch'] == 0:
+                fetch_weather_async(weather_ref, None)
 
-            # Fetch Earth photo data (update every hour)
-            if now - last_earth_fetch >= 3600 or last_earth_fetch == 0:
-                new_earth = fetch_earth_photo()
-                if new_earth['ok']:
-                    earth_data = new_earth
-                    log.info(f"Earth photo updated: {earth_data['date']}")
-                last_earth_fetch = now
+            # Trick #4: Async fetch Earth photo data (every 3600s = 720 cycles at 5s interval)
+            if now - earth_ref['last_fetch'] >= 3600 or earth_ref['last_fetch'] == 0:
+                fetch_earth_async(earth_ref, None)
 
             # Check for screen swap
             if now - last_swap_time >= SWAP_INTERVAL:
@@ -527,26 +617,19 @@ def main():
                 disp_right.bl_DutyCycle(BL_SIDE_DUTY)
                 is_dimmed = False
 
-            wifi = wifi_status()
+            # Trick #5: Update double buffers (pre-render both pages)
+            update_frame_buffers()
 
-            # Render screens based on current page
-            if current_page == 'earth':
-                # Earth photo page
-                disp_main.ShowImage(render_main_earth(earth_data))
-                disp_left.ShowImage(render_left_earth(earth_data))
-                disp_right.ShowImage(render_right_earth(earth_data))
-            else:
-                # Weather page (swap left/right content for burn-in prevention)
-                disp_main.ShowImage(render_main(weather, wifi))
+            # Trick #3: Lazy Rendering - only display the current page from buffer
+            with buffer_lock:
+                page_buffer = frame_buffers.get(current_page)
+                if page_buffer and page_buffer['main']:
+                    disp_main.ShowImage(page_buffer['main'])
+                    disp_left.ShowImage(page_buffer['left'])
+                    disp_right.ShowImage(page_buffer['right'])
 
-                if screens_swapped:
-                    disp_left.ShowImage(render_sun_times(weather, wifi))
-                    disp_right.ShowImage(render_humidity_wind(weather, wifi))
-                else:
-                    disp_left.ShowImage(render_humidity_wind(weather, wifi))
-                    disp_right.ShowImage(render_sun_times(weather, wifi))
-
-            time.sleep(30)  # Update displays every 30 seconds
+            # Trick #6: Faster loop = more responsive button handling (5s vs 30s)
+            time.sleep(LOOP_INTERVAL)
 
     except KeyboardInterrupt:
         log.info("Exiting...")
