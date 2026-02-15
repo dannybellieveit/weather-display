@@ -1,5 +1,5 @@
 #!/bin/bash
-# Weather Display - Install Script
+# Weather Display - Improved Install Script
 # https://github.com/dannybellieveit/weather-display
 
 set -e
@@ -10,6 +10,8 @@ echo "╚═══════════════════════�
 
 REPO_DIR="$HOME/weather-display"
 WAVESHARE_DIR="$HOME/Zero_LCD_HAT_A_Demo/python"
+ACTUAL_USER="${SUDO_USER:-$USER}"
+ACTUAL_HOME=$(eval echo ~$ACTUAL_USER)
 
 # Check if we're in the repo directory or need to clone
 if [ ! -f "$REPO_DIR/weather.py" ]; then
@@ -40,7 +42,7 @@ if ! grep -q "^dtparam=spi=on" /boot/config.txt 2>/dev/null && \
     echo "  ⚠ SPI enabled - reboot required after install"
 fi
 
-# Create systemd service
+# Create systemd service (run as actual user, not root)
 echo "→ Creating systemd service..."
 sudo tee /etc/systemd/system/weather.service > /dev/null << EOF
 [Unit]
@@ -50,10 +52,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=$REPO_DIR
-EnvironmentFile=-$REPO_DIR/.env
-ExecStart=/usr/bin/python3 $REPO_DIR/weather.py
+User=$ACTUAL_USER
+WorkingDirectory=$ACTUAL_HOME/weather-display
+Environment="HOME=$ACTUAL_HOME"
+ExecStart=/usr/bin/python3 $ACTUAL_HOME/weather-display/weather.py
 Restart=always
 RestartSec=10
 
@@ -61,20 +63,52 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
-# Create update script
+# Create improved update script
 echo "→ Creating update script..."
 sudo tee /usr/local/bin/weather-update > /dev/null << EOF
 #!/bin/bash
-cd "$REPO_DIR"
-git fetch -q origin main
+# Weather Display Auto-Update Script
+# Pulls changes from GitHub and restarts service if updated
+
+REPO_DIR="$ACTUAL_HOME/weather-display"
+LOG_FILE="/var/log/weather-update.log"
+
+cd "\$REPO_DIR" || {
+    echo "\$(date): ERROR - Could not cd to \$REPO_DIR" >> "\$LOG_FILE"
+    exit 1
+}
+
+# Fetch latest changes
+if ! git fetch -q origin main 2>&1; then
+    echo "\$(date): ERROR - Failed to fetch from GitHub" >> "\$LOG_FILE"
+    exit 1
+fi
+
+# Compare local and remote
 LOCAL=\$(git rev-parse HEAD)
 REMOTE=\$(git rev-parse origin/main)
+
 if [ "\$LOCAL" != "\$REMOTE" ]; then
-    git pull -q
-    systemctl restart weather
-    echo "\$(date): Updated weather display" >> /var/log/weather-update.log
+    echo "\$(date): Update available (\$LOCAL -> \$REMOTE)" >> "\$LOG_FILE"
+    
+    # Pull changes (reset --hard to avoid conflicts)
+    if git reset --hard origin/main 2>&1; then
+        echo "\$(date): Successfully pulled changes" >> "\$LOG_FILE"
+        
+        # Restart service
+        if systemctl restart weather 2>&1; then
+            echo "\$(date): Service restarted successfully" >> "\$LOG_FILE"
+        else
+            echo "\$(date): ERROR - Failed to restart service" >> "\$LOG_FILE"
+            exit 1
+        fi
+    else
+        echo "\$(date): ERROR - Failed to pull changes" >> "\$LOG_FILE"
+        exit 1
+    fi
 fi
 EOF
+
 sudo chmod +x /usr/local/bin/weather-update
 
 # Create systemd timer for auto-updates
@@ -116,6 +150,7 @@ echo ""
 echo "  Status:  sudo systemctl status weather"
 echo "  Logs:    journalctl -u weather -f"
 echo "  Restart: sudo systemctl restart weather"
+echo "  Update:  sudo /usr/local/bin/weather-update"
 echo ""
 echo "  Auto-updates enabled (every 5 min)"
 echo ""
