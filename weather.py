@@ -159,7 +159,7 @@ def fetch_weather():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  MAIN SCREEN (240x240) - Custom Design
+#  MAIN SCREEN (240x240) - Fixed Design
 # ══════════════════════════════════════════════════════════════════════════════
 def render_main(w, wifi):
     img  = Image.new("RGB", (240, 240), (10, 10, 14))
@@ -173,46 +173,46 @@ def render_main(w, wifi):
     draw.text((12, 21), CITY.upper(), font=f(13), fill=(80, 95, 95))
     draw.text((12, 37), time.strftime("%a %d %b"), font=f(11), fill=(55, 55, 70))
 
-    # ── Top Right: UV, Low, High ──────────────────────────────────────────────
-    # UV Index with label
+    # ── Top Right: UV Index ───────────────────────────────────────────────────
     uv_text = f"UV {w['uv']}"
-    draw.text((105, 14), "UV", font=f(9), fill=(60, 60, 70))
-    draw.text((105, 25), str(w['uv']), font=f(16), fill=uv_col(w['uv']))
+    uv_w = draw.textlength(uv_text, font=f(16))
+    draw.text((228 - uv_w, 23), uv_text, font=f(16), fill=uv_col(w['uv']))
 
-    # Low temp with down arrow
-    draw.text((145, 14), "LOW", font=f(9), fill=(60, 60, 70))
-    draw.polygon([(160, 16), (165, 21), (170, 16)], fill=(100, 160, 255))
-    draw.text((160, 25), f"{w['low']}°", font=f(16), fill=(120, 180, 255))
+    # ── Top Right: Low & High (clean, simple) ─────────────────────────────────
+    # Low temp
+    low_text = f"{w['low']}°"
+    low_w = draw.textlength(low_text, font=f(18))
+    draw.text((169 - low_w/2, 24), low_text, font=f(18), fill=(120, 180, 255))
 
-    # High temp with up arrow
-    draw.text((195, 14), "HI", font=f(9), fill=(60, 60, 70))
-    draw.polygon([(210, 21), (205, 16), (215, 16)], fill=(255, 140, 60))
-    draw.text((203, 25), f"{w['high']}°", font=f(16), fill=(255, 160, 80))
+    # High temp
+    high_text = f"{w['high']}°"
+    high_w = draw.textlength(high_text, font=f(18))
+    draw.text((199 - high_w/2, 24), high_text, font=f(18), fill=(255, 160, 80))
 
-    # WiFi indicator (top right corner)
-    draw_wifi(draw, 218, 8, wifi)
+    # WiFi indicator
+    draw_wifi(draw, 216, 10, wifi)
 
-    # ── Center: Large Temperature ─────────────────────────────────────────────
+    # ── Center: Large Temperature (properly centered!) ────────────────────────
     tc = temp_col(w['temp'])
     temp_text = f"{w['temp']}°"
-    temp_size = 85
-    tw = draw.textlength(temp_text, font=f(temp_size))
-    draw.text(((240 - tw) / 2, 112), temp_text, font=f(temp_size), fill=tc)
+    tw = draw.textlength(temp_text, font=f(85))
+    # Center at x=120 (half of 240)
+    draw.text((120 - tw/2, 115), temp_text, font=f(85), fill=tc)
 
-    # Feels like (smaller, centered below temp)
+    # Feels like (centered)
     feels_text = f"Feels {w['feels']}°"
     fw = draw.textlength(feels_text, font=f(12))
-    draw.text(((240 - fw) / 2, 135), feels_text, font=f(12), fill=(70, 70, 85))
+    draw.text((120 - fw/2, 138), feels_text, font=f(12), fill=(70, 70, 85))
 
-    # Condition (centered below feels)
+    # Condition (centered)
     cond = WMO.get(w['code'], 'Unknown')
     cw = draw.textlength(cond, font=f(16))
-    draw.text(((240 - cw) / 2, 158), cond, font=f(16), fill=(200, 200, 210))
+    draw.text((120 - cw/2, 158), cond, font=f(16), fill=(200, 200, 210))
 
-    # ── Bottom: Time ──────────────────────────────────────────────────────────
+    # ── Bottom: Time (properly centered!) ────────────────────────────────────
     time_text = time.strftime("%H:%M")
     time_w = draw.textlength(time_text, font=f(16))
-    draw.text(((240 - time_w) / 2, 224), time_text, font=f(16), fill=(224, 224, 224))
+    draw.text((120 - time_w/2, 220), time_text, font=f(16), fill=(224, 224, 224))
 
     return img
 
@@ -244,7 +244,7 @@ def render_left(w, wifi):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  RIGHT SCREEN (160x80) - Sunrise & Sunset
+#  RIGHT SCREEN (160x80) - Sunrise & Sunset (NO LABELS!)
 # ══════════════════════════════════════════════════════════════════════════════
 def render_right(w, wifi):
     img  = Image.new("RGB", (160, 80), (10, 10, 14))
@@ -254,20 +254,18 @@ def render_right(w, wifi):
         draw.text((60, 32), "--", font=f(14), fill=(60, 60, 70))
         return img
 
-    # Sunrise (left side)
+    # Sunrise (left side) - no label!
     draw_sunrise(draw, 40, 28, r=14)
-    draw.text((28, 8), "RISE", font=f(9), fill=(60, 60, 70))
-    sunrise_w = draw.textlength(w['sunrise'], font=f(16))
-    draw.text((40 - sunrise_w/2, 54), w['sunrise'], font=f(16), fill=(255, 190, 80))
+    sunrise_w = draw.textlength(w['sunrise'], font=f(14))
+    draw.text((40 - sunrise_w/2, 50), w['sunrise'], font=f(14), fill=(255, 190, 80))
 
     # Separator line
     draw.line([(80, 10), (80, 70)], fill=(25, 25, 35), width=1)
 
-    # Sunset (right side)
+    # Sunset (right side) - no label!
     draw_sunset(draw, 120, 28, r=14)
-    draw.text((106, 8), "SET", font=f(9), fill=(60, 60, 70))
-    sunset_w = draw.textlength(w['sunset'], font=f(16))
-    draw.text((120 - sunset_w/2, 54), w['sunset'], font=f(16), fill=(255, 110, 60))
+    sunset_w = draw.textlength(w['sunset'], font=f(14))
+    draw.text((120 - sunset_w/2, 50), w['sunset'], font=f(14), fill=(255, 110, 60))
 
     return img
 
