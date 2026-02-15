@@ -302,8 +302,8 @@ def render_main(w, wifi):
         return img
 
     # Top Left: City & Date
-    draw.text((12, 21), CITY.upper(), font=f(13), fill=(80, 95, 95))
-    draw.text((12, 37), time.strftime("%a %d %b"), font=f(11), fill=(55, 55, 70))
+    draw.text((12, 21), CITY.upper(), font=f(18), fill=(200, 200, 200))
+    draw.text((12, 37), time.strftime("%a %d %b"), font=f(16), fill=(150, 150, 150))
 
     # Top Right: Low & High
     low_text = f"{w['low']}°"
@@ -326,15 +326,15 @@ def render_main(w, wifi):
 
     # Feels like (centered)
     feels_text = f"Feels {w['feels']}°"
-    bbox = draw.textbbox((0, 0), feels_text, font=f(12))
+    bbox = draw.textbbox((0, 0), feels_text, font=f(18))
     feels_w = bbox[2] - bbox[0]
-    draw.text((120 - feels_w/2, 138), feels_text, font=f(12), fill=(70, 70, 85))
+    draw.text((120 - feels_w/2, 138), feels_text, font=f(18), fill=(200, 200, 200))
 
     # Condition (centered)
     cond = WMO.get(w['code'], 'Unknown')
-    bbox = draw.textbbox((0, 0), cond, font=f(16))
+    bbox = draw.textbbox((0, 0), cond, font=f(20))
     cond_w = bbox[2] - bbox[0]
-    draw.text((120, 158), cond, font=f(20), fill=(200, 200, 210))
+    draw.text((120 - cond_w/2, 158), cond, font=f(20), fill=(200, 200, 210))
 
     # Bottom Left: UV Index
     uv_text = f"UV {w['uv']}"
@@ -342,9 +342,9 @@ def render_main(w, wifi):
 
     # Bottom Center: Time (properly centered)
     time_text = time.strftime("%H:%M")
-    bbox = draw.textbbox((0, 0), time_text, font=f(16))
+    bbox = draw.textbbox((0, 0), time_text, font=f(30))
     time_w = bbox[2] - bbox[0]
-    draw.text((120, 210), time_text, font=f(30), fill=(224, 224, 224))
+    draw.text((120 - time_w/2, 200), time_text, font=f(30), fill=(224, 224, 224))
 
     return img
 
