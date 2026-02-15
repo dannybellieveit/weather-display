@@ -33,7 +33,16 @@ log = logging.getLogger(__name__)
 earth_image_cache = {
     'data': None,
     'resized_240': None,  # Cached 240x240 version for main screen
-    'timestamp': 0
+    'timestamp': 0,
+    'ttl': 3600,  # 1 hour, matches fetch interval
+    'size_bytes': 0
+}
+
+# Trick #7: WiFi Status Caching - cache WiFi status to reduce subprocess calls
+wifi_cache = {
+    'status': False,
+    'timestamp': 0,
+    'ttl': 60  # Check every 60s instead of 5s
 }
 
 # Trick #5: Double Buffering - pre-rendered frames for instant page switching
@@ -71,8 +80,11 @@ SWAP_INTERVAL = 3600  # Seconds between screen swaps (1 hour)
 FONT_DIR = os.path.join(WAVESHARE_DIR, 'Font')
 
 def f(size):
-    try:    return ImageFont.truetype(os.path.join(FONT_DIR, 'Font00.ttf'), size)
-    except: return ImageFont.load_default()
+    try:
+        return ImageFont.truetype(os.path.join(FONT_DIR, 'Font00.ttf'), size)
+    except (FileNotFoundError, OSError) as e:
+        log.warning(f"Font not found at {FONT_DIR}/Font00.ttf, using default font")
+        return ImageFont.load_default()
 
 # ── Weather codes ─────────────────────────────────────────────────────────────
 WMO = {
@@ -106,17 +118,35 @@ def uv_col(uv):
     return (200, 60, 100)
 
 def wifi_status():
+    """Check WiFi connectivity with caching (Trick #7) - reduces subprocess calls by 92%"""
+    global wifi_cache
+    now = time.time()
+
+    # Return cached result if fresh (within TTL)
+    if now - wifi_cache['timestamp'] < wifi_cache['ttl']:
+        return wifi_cache['status']
+
+    # Cache expired - perform actual check
+    status = False
     try:
         out = subprocess.check_output(['iwconfig','wlan0'], stderr=subprocess.DEVNULL).decode()
         if 'ESSID:"' in out and 'off/any' not in out:
-            return True
-    except: pass
-    try:
-        out = subprocess.check_output(['ip','route'], stderr=subprocess.DEVNULL).decode()
-        if 'default' in out:
-            return True
-    except: pass
-    return False
+            status = True
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        pass  # iwconfig not found or failed - network down
+
+    if not status:
+        try:
+            out = subprocess.check_output(['ip','route'], stderr=subprocess.DEVNULL).decode()
+            if 'default' in out:
+                status = True
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+            pass  # ip route failed - no default gateway
+
+    # Update cache
+    wifi_cache['status'] = status
+    wifi_cache['timestamp'] = now
+    return status
 
 
 def draw_wifi(draw, x, y, connected, col_on=(80,220,120), col_off=(180,60,60)):
@@ -192,6 +222,15 @@ def fetch_weather():
         log.warning(f"Fetch failed: {e}")
         return {'ok': False}
 
+def invalidate_earth_cache():
+    """Clear earth image cache on error or expiry (Trick #10)"""
+    global earth_image_cache
+    earth_image_cache['data'] = None
+    earth_image_cache['resized_240'] = None
+    earth_image_cache['timestamp'] = 0
+    earth_image_cache['size_bytes'] = 0
+    log.info("Earth cache invalidated")
+
 def fetch_earth_photo():
     """Fetch latest Earth photo from NASA EPIC API with caching (Trick #2)"""
     try:
@@ -234,6 +273,8 @@ def fetch_earth_photo():
         earth_image_cache['data'] = earth_img
         earth_image_cache['resized_240'] = earth_img.resize((240, 240), Image.LANCZOS)
         earth_image_cache['timestamp'] = time.time()
+        earth_image_cache['size_bytes'] = len(image_data)
+        log.info(f"Cached Earth image (TTL: {earth_image_cache['ttl']}s, size: {len(image_data)//1024}KB)")
 
         return {
             'ok': True,
@@ -245,6 +286,7 @@ def fetch_earth_photo():
 
     except Exception as e:
         log.error(f"Failed to fetch Earth photo: {e}")
+        invalidate_earth_cache()  # Clear stale cache on error
         return {'ok': False}
 
 
@@ -385,15 +427,33 @@ def render_main_earth(earth_data):
         draw.text((50, 130), "photo available", font=f(14), fill=(60, 60, 70))
         return img
 
-    # OPTIMIZATION: Use cached resized image instead of resizing every render (Trick #2)
+    # OPTIMIZATION: Use cached resized image with TTL validation (Tricks #2, #10)
     # This eliminates expensive LANCZOS resampling on every 5-second cycle
-    if earth_image_cache['resized_240'] is not None:
+    now = time.time()
+    cache_age = now - earth_image_cache['timestamp']
+    cache_valid = (earth_image_cache['resized_240'] is not None and
+                   cache_age < earth_image_cache['ttl'])
+
+    if cache_valid:
         return earth_image_cache['resized_240']
     else:
+        # Cache expired or empty
+        if earth_image_cache['resized_240'] is not None:
+            log.info(f"Cache expired (age: {cache_age:.0f}s > TTL: {earth_image_cache['ttl']}s)")
+            invalidate_earth_cache()
+
         # Fallback: resize on-the-fly if cache is empty
-        earth_img = earth_data['image']
-        earth_img = earth_img.resize((240, 240), Image.LANCZOS)
-        return earth_img
+        if earth_data.get('image'):
+            log.warning("Resizing Earth image on-the-fly (cache miss)")
+            earth_img = earth_data['image']
+            resized_img = earth_img.resize((240, 240), Image.LANCZOS)
+            # Update cache in fallback path to prevent redundant resizing
+            earth_image_cache['resized_240'] = resized_img
+            earth_image_cache['timestamp'] = now
+            return resized_img
+        else:
+            # No image available - return stale cache if available, otherwise blank
+            return earth_image_cache.get('resized_240') or img
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -518,27 +578,70 @@ def main():
     weather_ref = {'data': {'ok': False}, 'last_fetch': 0}
     earth_ref = {'data': {'ok': False}, 'last_fetch': 0}
 
-    # Trick #5: Double Buffering - helper to update frame buffers
+    # Trick #8: Dirty Flag Rendering - state tracking to skip unnecessary renders
+    last_render_state = {'hash': None}
+
+    def compute_state_hash(weather, earth_data, wifi, swapped):
+        """Compute hash of visible state for dirty flag detection (Trick #8)"""
+        weather_tuple = (
+            weather.get('temp'),
+            weather.get('feels'),
+            weather.get('humidity'),
+            weather.get('wind'),
+            weather.get('wdir'),
+            weather.get('code'),
+            weather.get('uv'),
+            weather.get('high'),
+            weather.get('low'),
+            weather.get('sunrise'),
+            weather.get('sunset'),
+            weather.get('ok')
+        )
+        earth_tuple = (
+            earth_data.get('ok'),
+            earth_data.get('date'),
+            earth_data.get('lat'),
+            earth_data.get('lon')
+        )
+        return (weather_tuple, earth_tuple, wifi, swapped)
+
+    # Trick #5 & #8: Double Buffering with Dirty Flag - only render when state changes
     def update_frame_buffers():
-        """Pre-render both pages into buffers for instant switching"""
+        """Pre-render both pages into buffers only when data changes (Tricks #5, #8)"""
+        nonlocal last_render_state
+
         with buffer_lock:
             wifi = wifi_status()
             weather = weather_ref['data']
             earth_data = earth_ref['data']
 
-            # Render weather page
-            frame_buffers['weather']['main'] = render_main(weather, wifi)
-            if screens_swapped:
-                frame_buffers['weather']['left'] = render_sun_times(weather, wifi)
-                frame_buffers['weather']['right'] = render_humidity_wind(weather, wifi)
-            else:
-                frame_buffers['weather']['left'] = render_humidity_wind(weather, wifi)
-                frame_buffers['weather']['right'] = render_sun_times(weather, wifi)
+            # Compute current state hash
+            current_state = compute_state_hash(weather, earth_data, wifi, screens_swapped)
 
-            # Render earth page
-            frame_buffers['earth']['main'] = render_main_earth(earth_data)
-            frame_buffers['earth']['left'] = render_left_earth(earth_data)
-            frame_buffers['earth']['right'] = render_right_earth(earth_data)
+            # Check if anything changed (Trick #8: Dirty Flag)
+            state_changed = (current_state != last_render_state['hash'])
+
+            if state_changed:
+                log.debug("Rendering: state changed")
+
+                # Render weather page
+                frame_buffers['weather']['main'] = render_main(weather, wifi)
+                if screens_swapped:
+                    frame_buffers['weather']['left'] = render_sun_times(weather, wifi)
+                    frame_buffers['weather']['right'] = render_humidity_wind(weather, wifi)
+                else:
+                    frame_buffers['weather']['left'] = render_humidity_wind(weather, wifi)
+                    frame_buffers['weather']['right'] = render_sun_times(weather, wifi)
+
+                # Render earth page
+                frame_buffers['earth']['main'] = render_main_earth(earth_data)
+                frame_buffers['earth']['left'] = render_left_earth(earth_data)
+                frame_buffers['earth']['right'] = render_right_earth(earth_data)
+
+                # Update state tracker
+                last_render_state['hash'] = current_state
+            else:
+                log.debug("Skipped render: state unchanged")
 
     # Trick #1: Event-Driven Rendering - immediate render on button press
     def render_current_page_now():
@@ -574,7 +677,8 @@ def main():
     log.info(f"- Screen swap every {SWAP_INTERVAL}s")
     log.info(f"- Press KEY2 to cycle between weather and Earth photo")
     log.info("✓ Buttons ready using Waveshare GPIO library")
-    log.info("✓ OPTIMIZATIONS: Image caching, async fetching, double buffering, instant page switching")
+    log.info("✓ OPTIMIZATIONS: Image caching, WiFi caching, async fetching, double buffering,")
+    log.info("✓                dirty flag rendering, cache invalidation, instant page switching")
 
     # Trick #6: Reduce loop sleep from 30s to 5s for more responsive updates
     LOOP_INTERVAL = 5  # seconds (was 30)
