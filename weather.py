@@ -195,15 +195,17 @@ def fetch_earth_photo():
         date_parts = date.split(' ')[0].split('-')
         year, month, day = date_parts[0], date_parts[1], date_parts[2]
 
-        # Construct image URL
-        image_url = f"https://epic.gsfc.nasa.gov/archive/natural/{year}/{month}/{day}/png/{image_name}.png"
+        # Construct image URL (use JPG instead of PNG to save bandwidth)
+        # JPG is ~200KB vs PNG ~2MB for same 2048x2048 image
+        image_url = f"https://epic.gsfc.nasa.gov/archive/natural/{year}/{month}/{day}/jpg/{image_name}.jpg"
 
-        log.info(f"Downloading Earth photo: {image_name}")
+        log.info(f"Downloading Earth photo: {image_name}.jpg")
 
-        # Download the image
+        # Download the image (loads directly into memory, not saved to disk)
         with urllib.request.urlopen(image_url, timeout=30) as img_response:
             image_data = img_response.read()
 
+        # Load from memory using BytesIO - no files created on disk
         earth_img = Image.open(BytesIO(image_data))
 
         coords = latest.get('centroid_coordinates', {})
@@ -425,10 +427,15 @@ def render_right_earth(earth_data):
 def main():
     # Setup GPIO for buttons
     GPIO.setwarnings(False)
+
+    # Clean up GPIO completely to avoid conflicts
     try:
-        GPIO.cleanup([KEY1_PIN, KEY2_PIN])  # Clean up any previous state
+        GPIO.cleanup()
     except:
         pass
+
+    # Small delay to ensure cleanup completes
+    time.sleep(0.1)
 
     GPIO.setmode(GPIO.BCM)
     GPIO.setup(KEY1_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
@@ -446,19 +453,28 @@ def main():
         nonlocal last_activity, is_dimmed
         last_activity = time.time()
         if is_dimmed:
-            log.info("Wake button pressed - restoring brightness")
+            log.info("✓ KEY1 pressed - restoring brightness")
+        else:
+            log.info("✓ KEY1 pressed")
 
     def page_cycle_pressed(channel):
         nonlocal current_page, last_activity
         current_page = 'earth' if current_page == 'weather' else 'weather'
         last_activity = time.time()  # Reset activity timer when changing pages
-        log.info(f"Switched to {current_page} page")
+        log.info(f"✓ KEY2 pressed - switched to {current_page} page")
 
+    # Set up button event detection with better error handling
     try:
         GPIO.add_event_detect(KEY1_PIN, GPIO.FALLING, callback=wake_button_pressed, bouncetime=300)
+        log.info("✓ KEY1 button ready (wake/brightness)")
+    except RuntimeError as e:
+        log.error(f"✗ Failed to set up KEY1: {e}")
+
+    try:
         GPIO.add_event_detect(KEY2_PIN, GPIO.FALLING, callback=page_cycle_pressed, bouncetime=300)
-    except RuntimeError:
-        log.warning("Could not set up button event detection - buttons disabled")
+        log.info("✓ KEY2 button ready (page cycling)")
+    except RuntimeError as e:
+        log.error(f"✗ Failed to set up KEY2: {e}")
 
     log.info("Initialising displays...")
     disp_main = LCD_1inch3.LCD_1inch3(
