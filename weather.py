@@ -2,9 +2,10 @@
 # -*- coding: UTF-8 -*-
 """
 Weather Station - Waveshare Triple LCD HAT
+Custom Design by Danny
 https://github.com/dannybellieveit/weather-display
 
-Main screen (1.3" 240x240): Current conditions
+Main screen (1.3" 240x240): Current conditions with UV, high/low, time
 Left screen  (0.96" 160x80): Humidity & Wind
 Right screen (0.96" 160x80): Sun times
 """
@@ -29,17 +30,15 @@ RST_R,    DC_R,    BL_R,    BUS_R,    DEV_R    = 23,  5, 12, 0, 1
 BL_MAIN_DUTY = 90   # Main screen brightness (0-100)
 BL_SIDE_DUTY = 45   # Side screens brightness (0-100)
 
-LAT  = float(os.environ.get('WEATHER_LAT', '51.5074'))
-LON  = float(os.environ.get('WEATHER_LON', '-0.1278'))
-CITY = os.environ.get('WEATHER_CITY', 'London')
+LAT, LON, CITY = 51.4279, -0.1255, "Streatham"
 UPDATE_SECONDS = 300
 
 # ── Fonts ─────────────────────────────────────────────────────────────────────
 FONT_DIR = os.path.join(WAVESHARE_DIR, 'Font')
 
-def load_font(size):
+def f(size):
     try:    return ImageFont.truetype(os.path.join(FONT_DIR, 'Font00.ttf'), size)
-    except Exception: return ImageFont.load_default()
+    except: return ImageFont.load_default()
 
 # ── Weather codes ─────────────────────────────────────────────────────────────
 WMO = {
@@ -65,17 +64,24 @@ def temp_col(t):
     if t < 28: return (255, 160, 60)
     return (255, 80, 60)
 
+def uv_col(uv):
+    if uv <= 2: return (100, 200, 100)
+    if uv <= 5: return (240, 200, 60)
+    if uv <= 7: return (255, 160, 60)
+    if uv <= 10: return (255, 100, 60)
+    return (200, 60, 100)
+
 def wifi_status():
     try:
         out = subprocess.check_output(['iwconfig','wlan0'], stderr=subprocess.DEVNULL).decode()
         if 'ESSID:"' in out and 'off/any' not in out:
             return True
-    except Exception: pass
+    except: pass
     try:
         out = subprocess.check_output(['ip','route'], stderr=subprocess.DEVNULL).decode()
         if 'default' in out:
             return True
-    except Exception: pass
+    except: pass
     return False
 
 def draw_wifi(draw, x, y, connected, col_on=(80,220,120), col_off=(180,60,60)):
@@ -84,21 +90,15 @@ def draw_wifi(draw, x, y, connected, col_on=(80,220,120), col_off=(180,60,60)):
     draw.arc([x+1,y+4,x+11,y+14], start=210, end=330, fill=col, width=2)
     draw.arc([x-2,y,x+14,y+16], start=210, end=330, fill=col, width=2)
 
-def draw_bar(draw, x, y, w, h, pct, fg, bg=(30,30,38)):
-    draw.rectangle([x,y,x+w,y+h], fill=bg)
-    fw = int(w * min(max(pct,0),1))
-    if fw > 0:
-        draw.rectangle([x,y,x+fw,y+h], fill=fg)
-
 # ── Graphics ──────────────────────────────────────────────────────────────────
 def draw_sunrise(draw, cx, cy, r=12):
     sun_col = (255, 190, 60)
     horizon_col = (60, 60, 75)
     ray_col = (255, 160, 40)
-    
+
     draw.line([(cx-r-6, cy), (cx+r+6, cy)], fill=horizon_col, width=1)
     draw.pieslice([cx-r, cy-r, cx+r, cy+r], start=180, end=0, fill=sun_col)
-    
+
     ray_len = 5
     for angle in [150, 120, 90, 60, 30]:
         rad = math.radians(angle)
@@ -112,10 +112,10 @@ def draw_sunset(draw, cx, cy, r=12):
     sun_col = (255, 120, 50)
     horizon_col = (60, 60, 75)
     ray_col = (255, 90, 40)
-    
+
     draw.line([(cx-r-6, cy), (cx+r+6, cy)], fill=horizon_col, width=1)
     draw.pieslice([cx-r, cy-r+4, cx+r, cy+r+4], start=200, end=340, fill=sun_col)
-    
+
     ray_len = 4
     for angle in [140, 110, 70, 40]:
         rad = math.radians(angle)
@@ -146,7 +146,7 @@ def fetch_weather():
             'wind':    round(c['wind_speed_10m']),
             'wdir':    round(c['wind_direction_10m']),
             'code':    int(c['weather_code']),
-            'uv':      round(c.get('uv_index',0)),
+            'uv':      round(c.get('uv_index', 0)),
             'high':    round(dl['temperature_2m_max'][0]),
             'low':     round(dl['temperature_2m_min'][0]),
             'sunrise': dl['sunrise'][0][11:16],
@@ -159,118 +159,116 @@ def fetch_weather():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  MAIN SCREEN (240x240)
+#  MAIN SCREEN (240x240) - Custom Design
 # ══════════════════════════════════════════════════════════════════════════════
 def render_main(w, wifi):
     img  = Image.new("RGB", (240, 240), (10, 10, 14))
     draw = ImageDraw.Draw(img)
-    
+
     if not w['ok']:
-        draw_wifi(draw, 112, 80, wifi)
-        msg = "No WiFi" if not wifi else "No Data"
-        mw = draw.textlength(msg, font=load_font(18))
-        draw.text(((240 - mw) / 2, 110), msg, font=load_font(18),
-                  fill=(180, 60, 60) if not wifi else (80, 80, 90))
+        draw.text((80, 110), "No Data", font=f(18), fill=(80, 80, 90))
         return img
 
+    # ── Top Left: City & Date ─────────────────────────────────────────────────
+    draw.text((12, 21), CITY.upper(), font=f(13), fill=(80, 95, 95))
+    draw.text((12, 37), time.strftime("%a %d %b"), font=f(11), fill=(55, 55, 70))
+
+    # ── Top Right: UV, Low, High ──────────────────────────────────────────────
+    # UV Index with label
+    uv_text = f"UV {w['uv']}"
+    draw.text((105, 14), "UV", font=f(9), fill=(60, 60, 70))
+    draw.text((105, 25), str(w['uv']), font=f(16), fill=uv_col(w['uv']))
+
+    # Low temp with down arrow
+    draw.text((145, 14), "LOW", font=f(9), fill=(60, 60, 70))
+    draw.polygon([(160, 16), (165, 21), (170, 16)], fill=(100, 160, 255))
+    draw.text((160, 25), f"{w['low']}°", font=f(16), fill=(120, 180, 255))
+
+    # High temp with up arrow
+    draw.text((195, 14), "HI", font=f(9), fill=(60, 60, 70))
+    draw.polygon([(210, 21), (205, 16), (215, 16)], fill=(255, 140, 60))
+    draw.text((203, 25), f"{w['high']}°", font=f(16), fill=(255, 160, 80))
+
+    # WiFi indicator (top right corner)
+    draw_wifi(draw, 218, 8, wifi)
+
+    # ── Center: Large Temperature ─────────────────────────────────────────────
     tc = temp_col(w['temp'])
-    
-    # Header
-    draw.text((12, 8), CITY.upper(), font=load_font(13), fill=(80, 80, 95))
-    draw.text((12, 24), time.strftime("%a %d %b"), font=load_font(11), fill=(55, 55, 70))
-    draw_wifi(draw, 216, 10, wifi)
-    if not wifi:
-        draw.text((178, 10), "OFFLINE", font=load_font(9), fill=(180, 60, 60))
-    draw.line([(12, 42), (228, 42)], fill=(25, 25, 35), width=1)
-    
-    # Big temperature
-    ts = f"{w['temp']}°"
-    tw = draw.textlength(ts, font=load_font(85))
-    draw.text(((240 - tw) / 2, 48), ts, font=load_font(85), fill=tc)
-    
-    # Condition
+    temp_text = f"{w['temp']}°"
+    temp_size = 85
+    tw = draw.textlength(temp_text, font=f(temp_size))
+    draw.text(((240 - tw) / 2, 112), temp_text, font=f(temp_size), fill=tc)
+
+    # Feels like (smaller, centered below temp)
+    feels_text = f"Feels {w['feels']}°"
+    fw = draw.textlength(feels_text, font=f(12))
+    draw.text(((240 - fw) / 2, 135), feels_text, font=f(12), fill=(70, 70, 85))
+
+    # Condition (centered below feels)
     cond = WMO.get(w['code'], 'Unknown')
-    cw = draw.textlength(cond, font=load_font(16))
-    draw.text(((240 - cw) / 2, 138), cond, font=load_font(16), fill=(200, 200, 210))
-    
-    # Feels like
-    fl = f"Feels {w['feels']}°"
-    fw = draw.textlength(fl, font=load_font(12))
-    draw.text(((240 - fw) / 2, 160), fl, font=load_font(12), fill=(70, 70, 85))
-    
-    draw.line([(12, 182), (228, 182)], fill=(25, 25, 35), width=1)
-    
-    # High / Low
-    hl_text = f"{w['high']}°"
-    ll_text = f"{w['low']}°"
-    center = 120
-    spacing = 50
-    
-    hx = center - spacing
-    draw.polygon([(hx-8, 204), (hx, 194), (hx+8, 204)], fill=(255, 140, 60))
-    draw.text((hx - draw.textlength(hl_text, font=load_font(18))/2, 208), hl_text, font=load_font(18), fill=(255, 160, 80))
-    
-    lx = center + spacing
-    draw.polygon([(lx-8, 194), (lx, 204), (lx+8, 194)], fill=(100, 160, 255))
-    draw.text((lx - draw.textlength(ll_text, font=load_font(18))/2, 208), ll_text, font=load_font(18), fill=(120, 180, 255))
-    
-    # Clock
-    clk = time.strftime("%H:%M")
-    draw.text(((240 - draw.textlength(clk, font=load_font(10))) / 2, 228), clk, font=load_font(10), fill=(40, 40, 55))
-    
+    cw = draw.textlength(cond, font=f(16))
+    draw.text(((240 - cw) / 2, 158), cond, font=f(16), fill=(200, 200, 210))
+
+    # ── Bottom: Time ──────────────────────────────────────────────────────────
+    time_text = time.strftime("%H:%M")
+    time_w = draw.textlength(time_text, font=f(16))
+    draw.text(((240 - time_w) / 2, 224), time_text, font=f(16), fill=(224, 224, 224))
+
     return img
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  LEFT SCREEN (160x80)
+#  LEFT SCREEN (160x80) - Humidity & Wind
 # ══════════════════════════════════════════════════════════════════════════════
-def render_left(w):
+def render_left(w, wifi):
     img  = Image.new("RGB", (160, 80), (10, 10, 14))
     draw = ImageDraw.Draw(img)
-    
+
     if not w['ok']:
-        draw.text((60, 32), "--", font=load_font(14), fill=(60, 60, 70))
+        draw.text((60, 32), "--", font=f(14), fill=(60, 60, 70))
         return img
-    
-    # Humidity
-    draw.text((8, 4), "HUM", font=load_font(10), fill=(50, 50, 65))
-    draw.text((8, 16), f"{w['humidity']}%", font=load_font(24), fill=(60, 180, 180))
-    draw_bar(draw, 8, 52, 60, 5, w['humidity']/100, (60, 180, 180))
-    
-    draw.line([(80, 8), (80, 72)], fill=(25, 25, 35), width=1)
-    
-    # Wind
-    draw.text((88, 4), "WIND", font=load_font(10), fill=(50, 50, 65))
-    draw.text((88, 16), f"{w['wind']}", font=load_font(24), fill=(160, 110, 220))
-    draw.text((88, 46), "km/h", font=load_font(9), fill=(60, 60, 75))
-    draw.text((88, 60), wind_dir(w['wdir']), font=load_font(12), fill=(160, 110, 220))
-    
+
+    # Humidity (left side)
+    draw.text((8, 8), "HUM", font=f(10), fill=(50, 50, 65))
+    draw.text((8, 32), f"{w['humidity']}%", font=f(28), fill=(60, 180, 180))
+
+    # Separator line
+    draw.line([(80, 10), (80, 70)], fill=(25, 25, 35), width=1)
+
+    # Wind (right side)
+    draw.text((88, 8), "WIND", font=f(10), fill=(50, 50, 65))
+    draw.text((88, 32), f"{w['wind']}", font=f(28), fill=(160, 110, 220))
+    draw.text((88, 62), f"{wind_dir(w['wdir'])} km/h", font=f(10), fill=(80, 80, 95))
+
     return img
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  RIGHT SCREEN (160x80)
+#  RIGHT SCREEN (160x80) - Sunrise & Sunset
 # ══════════════════════════════════════════════════════════════════════════════
-def render_right(w):
+def render_right(w, wifi):
     img  = Image.new("RGB", (160, 80), (10, 10, 14))
     draw = ImageDraw.Draw(img)
-    
+
     if not w['ok']:
-        draw.text((60, 32), "--", font=load_font(14), fill=(60, 60, 70))
+        draw.text((60, 32), "--", font=f(14), fill=(60, 60, 70))
         return img
-    
-    # Sunrise
-    draw_sunrise(draw, 32, 28, r=14)
-    draw.text((32 - draw.textlength(w['sunrise'], font=load_font(14))/2, 50), 
-              w['sunrise'], font=load_font(14), fill=(255, 190, 80))
-    
-    draw.line([(80, 8), (80, 72)], fill=(25, 25, 35), width=1)
-    
-    # Sunset
+
+    # Sunrise (left side)
+    draw_sunrise(draw, 40, 28, r=14)
+    draw.text((28, 8), "RISE", font=f(9), fill=(60, 60, 70))
+    sunrise_w = draw.textlength(w['sunrise'], font=f(16))
+    draw.text((40 - sunrise_w/2, 54), w['sunrise'], font=f(16), fill=(255, 190, 80))
+
+    # Separator line
+    draw.line([(80, 10), (80, 70)], fill=(25, 25, 35), width=1)
+
+    # Sunset (right side)
     draw_sunset(draw, 120, 28, r=14)
-    draw.text((120 - draw.textlength(w['sunset'], font=load_font(14))/2, 50), 
-              w['sunset'], font=load_font(14), fill=(255, 110, 60))
-    
+    draw.text((106, 8), "SET", font=f(9), fill=(60, 60, 70))
+    sunset_w = draw.textlength(w['sunset'], font=f(16))
+    draw.text((120 - sunset_w/2, 54), w['sunset'], font=f(16), fill=(255, 110, 60))
+
     return img
 
 
@@ -290,7 +288,7 @@ def main():
     for d in [disp_main, disp_left, disp_right]:
         d.Init()
         d.clear()
-    
+
     disp_main.bl_DutyCycle(BL_MAIN_DUTY)
     disp_left.bl_DutyCycle(BL_SIDE_DUTY)
     disp_right.bl_DutyCycle(BL_SIDE_DUTY)
@@ -308,24 +306,19 @@ def main():
                 new = fetch_weather()
                 if new['ok']:
                     weather = new
-                    last_fetch = now
                     log.info(f"{weather['temp']}°C {WMO.get(weather['code'], '')}")
-                else:
-                    last_fetch = now - UPDATE_SECONDS + 60  # retry in 60s
+                last_fetch = now
 
             wifi = wifi_status()
-            
+
             disp_main.ShowImage(render_main(weather, wifi))
-            disp_left.ShowImage(render_left(weather))
-            disp_right.ShowImage(render_right(weather))
-            
+            disp_left.ShowImage(render_left(weather, wifi))
+            disp_right.ShowImage(render_right(weather, wifi))
+
             time.sleep(30)
 
     except KeyboardInterrupt:
         log.info("Exiting...")
-    except Exception:
-        log.exception("Unexpected error")
-    finally:
         for d in [disp_main, disp_left, disp_right]:
             d.clear()
             d.module_exit()
