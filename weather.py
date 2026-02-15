@@ -18,6 +18,7 @@ Burn-in prevention:
 import os, sys, time, logging, urllib.request, json, subprocess, math
 import spidev as SPI
 import RPi.GPIO as GPIO
+from io import BytesIO
 
 WAVESHARE_DIR = os.path.join(os.path.expanduser('~'), 'Zero_LCD_HAT_A_Demo', 'python')
 sys.path.append(WAVESHARE_DIR)
@@ -42,8 +43,8 @@ LAT, LON, CITY = 51.4279, -0.1255, "Streatham"
 UPDATE_SECONDS = 300
 
 # ── Manual Positioning (Adjust these to move the temperature!) ───────────────
-TEMP_X = 95   # X position: adjust to move left/right (0-240)
-TEMP_Y = 40  # Y position: adjust to move up/down (0-240)
+TEMP_X = 50   # X position: adjust to move left/right (0-240)
+TEMP_Y = 115  # Y position: adjust to move up/down (0-240)
 
 # ── Burn-in Prevention Settings ───────────────────────────────────────────────
 DIM_TIMEOUT = 120    # Seconds before auto-dim (2 minutes)
@@ -174,6 +175,53 @@ def fetch_weather():
         log.warning(f"Fetch failed: {e}")
         return {'ok': False}
 
+def fetch_earth_photo():
+    """Fetch latest Earth photo from NASA EPIC API"""
+    try:
+        log.info("Fetching latest Earth photo from NASA EPIC...")
+        api_url = "https://epic.gsfc.nasa.gov/api/natural"
+
+        with urllib.request.urlopen(api_url, timeout=15) as response:
+            images = json.loads(response.read())
+
+        if not images:
+            return {'ok': False}
+
+        latest = images[0]
+        image_name = latest['image']
+        date = latest['date']
+
+        # Parse date for image URL
+        date_parts = date.split(' ')[0].split('-')
+        year, month, day = date_parts[0], date_parts[1], date_parts[2]
+
+        # Construct image URL
+        image_url = f"https://epic.gsfc.nasa.gov/archive/natural/{year}/{month}/{day}/png/{image_name}.png"
+
+        log.info(f"Downloading Earth photo: {image_name}")
+
+        # Download the image
+        with urllib.request.urlopen(image_url, timeout=30) as img_response:
+            image_data = img_response.read()
+
+        earth_img = Image.open(BytesIO(image_data))
+
+        coords = latest.get('centroid_coordinates', {})
+        lat = coords.get('lat', 0)
+        lon = coords.get('lon', 0)
+
+        return {
+            'ok': True,
+            'image': earth_img,
+            'date': date,
+            'lat': round(lat, 1),
+            'lon': round(lon, 1)
+        }
+
+    except Exception as e:
+        log.error(f"Failed to fetch Earth photo: {e}")
+        return {'ok': False}
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  MAIN SCREEN (240x240)
@@ -300,6 +348,79 @@ def render_sun_times(w, wifi):
     return img
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  EARTH PHOTO PAGE - MAIN SCREEN (240x240)
+# ══════════════════════════════════════════════════════════════════════════════
+def render_main_earth(earth_data):
+    img = Image.new("RGB", (240, 240), (0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    if not earth_data['ok']:
+        draw.text((60, 110), "No Earth", font=f(18), fill=(80, 80, 90))
+        draw.text((50, 130), "photo available", font=f(14), fill=(60, 60, 70))
+        return img
+
+    # Resize Earth image to fit screen (240x240)
+    earth_img = earth_data['image']
+    earth_img = earth_img.resize((240, 240), Image.LANCZOS)
+    return earth_img
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  EARTH PHOTO PAGE - LEFT SCREEN (160x80) - Date & Time Info
+# ══════════════════════════════════════════════════════════════════════════════
+def render_left_earth(earth_data):
+    img = Image.new("RGB", (160, 80), (10, 10, 14))
+    draw = ImageDraw.Draw(img)
+
+    if not earth_data['ok']:
+        draw.text((50, 32), "--", font=f(14), fill=(60, 60, 70))
+        return img
+
+    # Title
+    draw.text((8, 6), "NASA EPIC", font=f(12), fill=(100, 150, 255))
+
+    # Parse date from "YYYY-MM-DD HH:MM:SS"
+    date_str = earth_data['date']
+    date_part = date_str.split(' ')[0]  # YYYY-MM-DD
+    time_part = date_str.split(' ')[1][:5]  # HH:MM
+
+    # Display date
+    draw.text((8, 28), date_part, font=f(14), fill=(200, 200, 210))
+
+    # Display time (UTC)
+    draw.text((8, 48), f"{time_part} UTC", font=f(12), fill=(150, 150, 160))
+
+    return img
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  EARTH PHOTO PAGE - RIGHT SCREEN (160x80) - Location Info
+# ══════════════════════════════════════════════════════════════════════════════
+def render_right_earth(earth_data):
+    img = Image.new("RGB", (160, 80), (10, 10, 14))
+    draw = ImageDraw.Draw(img)
+
+    if not earth_data['ok']:
+        draw.text((50, 32), "--", font=f(14), fill=(60, 60, 70))
+        return img
+
+    # Title
+    draw.text((8, 6), "CENTER", font=f(10), fill=(80, 80, 95))
+
+    # Latitude
+    lat = earth_data['lat']
+    lat_dir = 'N' if lat >= 0 else 'S'
+    draw.text((8, 26), f"LAT: {abs(lat)}° {lat_dir}", font=f(12), fill=(100, 200, 150))
+
+    # Longitude
+    lon = earth_data['lon']
+    lon_dir = 'E' if lon >= 0 else 'W'
+    draw.text((8, 46), f"LON: {abs(lon)}° {lon_dir}", font=f(12), fill=(100, 200, 150))
+
+    return img
+
+
 # ── Main loop ─────────────────────────────────────────────────────────────────
 def main():
     # Setup GPIO for buttons
@@ -318,18 +439,26 @@ def main():
     is_dimmed = False
     screens_swapped = False
     last_swap_time = time.time()
+    current_page = 'weather'  # 'weather' or 'earth'
 
-    # Button callback
+    # Button callbacks
     def wake_button_pressed(channel):
         nonlocal last_activity, is_dimmed
         last_activity = time.time()
         if is_dimmed:
             log.info("Wake button pressed - restoring brightness")
 
+    def page_cycle_pressed(channel):
+        nonlocal current_page, last_activity
+        current_page = 'earth' if current_page == 'weather' else 'weather'
+        last_activity = time.time()  # Reset activity timer when changing pages
+        log.info(f"Switched to {current_page} page")
+
     try:
         GPIO.add_event_detect(KEY1_PIN, GPIO.FALLING, callback=wake_button_pressed, bouncetime=300)
+        GPIO.add_event_detect(KEY2_PIN, GPIO.FALLING, callback=page_cycle_pressed, bouncetime=300)
     except RuntimeError:
-        log.warning("Could not set up button event detection - wake button disabled")
+        log.warning("Could not set up button event detection - buttons disabled")
 
     log.info("Initialising displays...")
     disp_main = LCD_1inch3.LCD_1inch3(
@@ -351,11 +480,14 @@ def main():
     disp_right.bl_DutyCycle(BL_SIDE_DUTY)
 
     weather = {'ok': False}
+    earth_data = {'ok': False}
     last_fetch = 0
+    last_earth_fetch = 0
 
     log.info("Weather station ready! (Burn-in protection enabled)")
     log.info(f"- Auto-dim after {DIM_TIMEOUT}s")
     log.info(f"- Screen swap every {SWAP_INTERVAL}s")
+    log.info(f"- Press KEY2 to cycle between weather and Earth photo")
 
     try:
         while True:
@@ -369,6 +501,14 @@ def main():
                     weather = new
                     log.info(f"{weather['temp']}°C {WMO.get(weather['code'], '')}")
                 last_fetch = now
+
+            # Fetch Earth photo data (update every hour)
+            if now - last_earth_fetch >= 3600 or last_earth_fetch == 0:
+                new_earth = fetch_earth_photo()
+                if new_earth['ok']:
+                    earth_data = new_earth
+                    log.info(f"Earth photo updated: {earth_data['date']}")
+                last_earth_fetch = now
 
             # Check for screen swap
             if now - last_swap_time >= SWAP_INTERVAL:
@@ -396,15 +536,22 @@ def main():
 
             wifi = wifi_status()
 
-            # Render screens (swap left/right content)
-            disp_main.ShowImage(render_main(weather, wifi))
-
-            if screens_swapped:
-                disp_left.ShowImage(render_sun_times(weather, wifi))
-                disp_right.ShowImage(render_humidity_wind(weather, wifi))
+            # Render screens based on current page
+            if current_page == 'earth':
+                # Earth photo page
+                disp_main.ShowImage(render_main_earth(earth_data))
+                disp_left.ShowImage(render_left_earth(earth_data))
+                disp_right.ShowImage(render_right_earth(earth_data))
             else:
-                disp_left.ShowImage(render_humidity_wind(weather, wifi))
-                disp_right.ShowImage(render_sun_times(weather, wifi))
+                # Weather page (swap left/right content for burn-in prevention)
+                disp_main.ShowImage(render_main(weather, wifi))
+
+                if screens_swapped:
+                    disp_left.ShowImage(render_sun_times(weather, wifi))
+                    disp_right.ShowImage(render_humidity_wind(weather, wifi))
+                else:
+                    disp_left.ShowImage(render_humidity_wind(weather, wifi))
+                    disp_right.ShowImage(render_sun_times(weather, wifi))
 
             time.sleep(30)
 
