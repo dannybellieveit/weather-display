@@ -266,7 +266,6 @@ def fetch_weather():
         f"&hourly=weather_code"
         f"&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset,uv_index_max"
         f"&timezone=Europe/London&forecast_days=2"
-        f"&models=ukmo_seamless"
     )
     try:
         with urllib.request.urlopen(url, timeout=10) as r:
