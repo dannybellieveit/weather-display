@@ -264,7 +264,7 @@ def fetch_weather():
         f"&current=temperature_2m,apparent_temperature,relative_humidity_2m,"
         f"wind_speed_10m,wind_direction_10m,weather_code,uv_index"
         f"&hourly=weather_code"
-        f"&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset"
+        f"&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset,uv_index_max"
         f"&timezone=Europe/London&forecast_days=2"
         f"&models=ukmo_seamless"
     )
@@ -282,7 +282,7 @@ def fetch_weather():
             'wind':    round(c['wind_speed_10m']),
             'wdir':    round(c['wind_direction_10m']),
             'code':    code,
-            'uv':      round(c.get('uv_index', 0)),
+            'uv':      round(dl.get('uv_index_max', [0])[0]),
             'high':    round(dl['temperature_2m_max'][0]),
             'low':     round(dl['temperature_2m_min'][0]),
             'sunrise': dl['sunrise'][0][11:16],
