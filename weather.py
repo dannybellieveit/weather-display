@@ -281,7 +281,7 @@ def fetch_weather():
             'wind':    round(c['wind_speed_10m']),
             'wdir':    round(c['wind_direction_10m']),
             'code':    code,
-            'uv':      round(dl.get('uv_index_max', [0])[0]),
+            'uv':      dl.get('uv_index_max', [0])[0],
             'high':    round(dl['temperature_2m_max'][0]),
             'low':     round(dl['temperature_2m_min'][0]),
             'sunrise': dl['sunrise'][0][11:16],
@@ -411,7 +411,7 @@ def render_main(w, wifi):
     draw.text((120 - cond_w/2, 158), cond, font=f(20), fill=(200, 200, 210))
 
     # Bottom Left: UV Index
-    uv_text = f"UV {w['uv']}"
+    uv_text = f"UV {w['uv']:.1f}"
     draw.text((12, 210), uv_text, font=f(20), fill=uv_col(w['uv']))
 
     # Bottom Center: Time (properly centered)
