@@ -654,6 +654,7 @@ def main():
 
     # Trick #8: Dirty Flag Rendering - state tracking to skip unnecessary renders
     last_render_state = {'hash': None}
+    last_displayed_page = None
 
     def compute_state_hash(weather, earth_data, wifi, swapped):
         """Compute hash of visible state for dirty flag detection (Trick #8)"""
@@ -678,7 +679,7 @@ def main():
             earth_data.get('lat'),
             earth_data.get('lon')
         )
-        return (weather_tuple, earth_tuple, wifi, swapped)
+        return (weather_tuple, earth_tuple, wifi, swapped, time.strftime("%H:%M"))
 
     # Trick #5 & #8: Double Buffering with Dirty Flag - only render when state changes
     def update_frame_buffers():
@@ -715,8 +716,10 @@ def main():
 
                 # Update state tracker
                 last_render_state['hash'] = current_state
+                return True
             else:
                 log.debug("Skipped render: state unchanged")
+                return False
 
     # Trick #1: Event-Driven Rendering - immediate render on button press
     def render_current_page_now():
@@ -797,15 +800,18 @@ def main():
                 is_dimmed = False
 
             # Trick #5: Update double buffers (pre-render both pages)
-            update_frame_buffers()
+            buffers_changed = update_frame_buffers()
 
-            # Trick #3: Lazy Rendering - only display the current page from buffer
-            with buffer_lock:
-                page_buffer = frame_buffers.get(current_page)
-                if page_buffer and page_buffer['main']:
-                    disp_main.ShowImage(page_buffer['main'])
-                    disp_left.ShowImage(page_buffer['left'])
-                    disp_right.ShowImage(page_buffer['right'])
+            # Trick #3: Lazy Rendering - only push to displays when content changed
+            page_changed = (current_page != last_displayed_page)
+            if buffers_changed or page_changed:
+                with buffer_lock:
+                    page_buffer = frame_buffers.get(current_page)
+                    if page_buffer and page_buffer['main']:
+                        disp_main.ShowImage(page_buffer['main'])
+                        disp_left.ShowImage(page_buffer['left'])
+                        disp_right.ShowImage(page_buffer['right'])
+                        last_displayed_page = current_page
 
             # Trick #6: Faster loop = more responsive button handling (5s vs 30s)
             time.sleep(LOOP_INTERVAL)
