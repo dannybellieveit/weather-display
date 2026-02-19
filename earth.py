@@ -216,6 +216,7 @@ def main():
     last_list_fetch = 0       # When we last refreshed the image list
     current_photo = {'ok': False}
     last_photo_hour = -1      # Track which hour we last loaded a photo
+    display_dirty = True      # Only push to screens when something changed
 
     log.info(f"NASA Earth Photo Display ready! Rotating {MAX_PHOTOS} images, one per hour.")
 
@@ -242,14 +243,17 @@ def main():
                 if new_photo['ok']:
                     current_photo = new_photo
                     log.info(f"Now showing photo {human_idx}/{total}: {current_photo['date']}")
+                    display_dirty = True
                 last_photo_hour = current_hour
 
-            # Render screens
-            disp_main.ShowImage(render_main(current_photo))
-            disp_left.ShowImage(render_left(current_photo))
-            disp_right.ShowImage(render_right(current_photo))
+            # Only push to displays when content has changed (avoids flicker)
+            if display_dirty:
+                disp_main.ShowImage(render_main(current_photo))
+                disp_left.ShowImage(render_left(current_photo))
+                disp_right.ShowImage(render_right(current_photo))
+                display_dirty = False
 
-            time.sleep(60)  # Update display every minute
+            time.sleep(60)  # Check for photo rotation every minute
 
     except KeyboardInterrupt:
         log.info("Exiting...")
