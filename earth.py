@@ -2,10 +2,10 @@
 # -*- coding: UTF-8 -*-
 """
 NASA Earth Photo Display - Waveshare Triple LCD HAT
-Shows NASA EPIC (Earth Polychromatic Imaging Camera) latest Earth photo
+Shows NASA EPIC (Earth Polychromatic Imaging Camera) Earth photos
 
-Main screen (1.3" 240x240): NASA's latest Earth photo
-Left screen  (0.96" 160x80): Date & time of photo
+Main screen (1.3" 240x240): NASA Earth photo (rotates through last 12, one per hour)
+Left screen  (0.96" 160x80): Date & time of photo + image index
 Right screen (0.96" 160x80): Location info
 """
 
@@ -30,7 +30,8 @@ RST_R,    DC_R,    BL_R,    BUS_R,    DEV_R    = 23,  5, 12, 0, 1
 BL_MAIN_DUTY = 90   # Main screen brightness (0-100)
 BL_SIDE_DUTY = 45   # Side screens brightness (0-100)
 
-UPDATE_SECONDS = 3600  # Update Earth photo every hour
+UPDATE_LIST_SECONDS = 43200  # Refresh photo list every 12 hours
+MAX_PHOTOS = 12          # Number of images to rotate through
 
 # ── Fonts ─────────────────────────────────────────────────────────────────────
 FONT_DIR = os.path.join(WAVESHARE_DIR, 'Font')
@@ -41,16 +42,15 @@ def f(size):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  NASA EPIC API
+#  NASA EPIC API  –  12-image hourly rotation
 # ══════════════════════════════════════════════════════════════════════════════
-def fetch_earth_photo():
+def fetch_photos_list():
     """
-    Fetch latest Earth photo from NASA EPIC API
-    Returns dict with image data and metadata
+    Fetch metadata for the last MAX_PHOTOS images from NASA EPIC API.
+    Returns a list of metadata dicts (no images downloaded yet).
     """
     try:
-        # Get list of recent images (no API key needed!)
-        log.info("Fetching latest Earth photo from NASA EPIC...")
+        log.info("Fetching NASA EPIC image list...")
         api_url = "https://epic.gsfc.nasa.gov/api/natural"
 
         with urllib.request.urlopen(api_url, timeout=15) as response:
@@ -58,12 +58,25 @@ def fetch_earth_photo():
 
         if not images:
             log.warning("No images available from NASA EPIC")
-            return {'ok': False}
+            return []
 
-        # Get the most recent image
-        latest = images[0]
-        image_name = latest['image']
-        date = latest['date']
+        photos = images[:MAX_PHOTOS]
+        log.info(f"Got {len(photos)} images from NASA EPIC")
+        return photos
+
+    except Exception as e:
+        log.error(f"Failed to fetch photo list: {e}")
+        return []
+
+
+def fetch_photo_by_metadata(meta, index, total):
+    """
+    Download a single NASA EPIC photo given its metadata dict.
+    Returns dict with image data and metadata.
+    """
+    try:
+        image_name = meta['image']
+        date = meta['date']
 
         # Parse date for image URL (format: YYYY-MM-DD HH:MM:SS -> YYYY/MM/DD)
         date_parts = date.split(' ')[0].split('-')
@@ -73,17 +86,14 @@ def fetch_earth_photo():
         # Format: https://epic.gsfc.nasa.gov/archive/natural/YYYY/MM/DD/png/imagename.png
         image_url = f"https://epic.gsfc.nasa.gov/archive/natural/{year}/{month}/{day}/png/{image_name}.png"
 
-        log.info(f"Downloading Earth photo: {image_name}")
+        log.info(f"Downloading Earth photo {index}/{total}: {image_name}")
 
-        # Download the image
         with urllib.request.urlopen(image_url, timeout=30) as img_response:
             image_data = img_response.read()
 
-        # Load image from bytes
         earth_img = Image.open(BytesIO(image_data))
 
-        # Get coordinates
-        coords = latest.get('centroid_coordinates', {})
+        coords = meta.get('centroid_coordinates', {})
         lat = coords.get('lat', 0)
         lon = coords.get('lon', 0)
 
@@ -93,11 +103,13 @@ def fetch_earth_photo():
             'date': date,
             'lat': round(lat, 1),
             'lon': round(lon, 1),
-            'caption': latest.get('caption', 'Earth')
+            'caption': meta.get('caption', 'Earth'),
+            'index': index,
+            'total': total,
         }
 
     except Exception as e:
-        log.error(f"Failed to fetch Earth photo: {e}")
+        log.error(f"Failed to download Earth photo: {e}")
         return {'ok': False}
 
 
@@ -132,8 +144,10 @@ def render_left(earth_data):
         draw.text((50, 32), "--", font=f(14), fill=(60, 60, 70))
         return img
 
-    # Title
-    draw.text((8, 6), "NASA EPIC", font=f(12), fill=(100, 150, 255))
+    # Title with image index
+    idx = earth_data.get('index', 1)
+    total = earth_data.get('total', MAX_PHOTOS)
+    draw.text((8, 6), f"NASA EPIC {idx}/{total}", font=f(11), fill=(100, 150, 255))
 
     # Parse date from "YYYY-MM-DD HH:MM:SS"
     date_str = earth_data['date']
@@ -197,29 +211,49 @@ def main():
     disp_left.bl_DutyCycle(BL_SIDE_DUTY)
     disp_right.bl_DutyCycle(BL_SIDE_DUTY)
 
-    earth_data = {'ok': False}
-    last_fetch = 0
+    # 12-image rotation state
+    photos_list = []          # Metadata for up to MAX_PHOTOS images
+    last_list_fetch = 0       # When we last refreshed the image list
+    current_photo = {'ok': False}
+    last_photo_hour = -1      # Track which hour we last loaded a photo
+    display_dirty = True      # Only push to screens when something changed
 
-    log.info("NASA Earth Photo Display ready!")
+    log.info(f"NASA Earth Photo Display ready! Rotating {MAX_PHOTOS} images, one per hour.")
 
     try:
         while True:
             now = time.time()
+            current_hour = int(now // 3600)  # Advances once per hour
 
-            # Fetch new Earth photo periodically
-            if now - last_fetch >= UPDATE_SECONDS or last_fetch == 0:
-                new_data = fetch_earth_photo()
-                if new_data['ok']:
-                    earth_data = new_data
-                    log.info(f"Earth photo updated: {earth_data['date']}")
-                last_fetch = now
+            # Refresh the photo list every 12 hours (or on first run)
+            if now - last_list_fetch >= UPDATE_LIST_SECONDS or not photos_list:
+                new_list = fetch_photos_list()
+                if new_list:
+                    photos_list = new_list
+                    last_list_fetch = now
+                    # Force a photo reload when list refreshes
+                    last_photo_hour = -1
 
-            # Render screens
-            disp_main.ShowImage(render_main(earth_data))
-            disp_left.ShowImage(render_left(earth_data))
-            disp_right.ShowImage(render_right(earth_data))
+            # Advance to the next photo once per hour
+            if photos_list and current_hour != last_photo_hour:
+                idx = current_hour % len(photos_list)
+                human_idx = idx + 1  # 1-based for display
+                total = len(photos_list)
+                new_photo = fetch_photo_by_metadata(photos_list[idx], human_idx, total)
+                if new_photo['ok']:
+                    current_photo = new_photo
+                    log.info(f"Now showing photo {human_idx}/{total}: {current_photo['date']}")
+                    display_dirty = True
+                last_photo_hour = current_hour
 
-            time.sleep(60)  # Update display every minute
+            # Only push to displays when content has changed (avoids flicker)
+            if display_dirty:
+                disp_main.ShowImage(render_main(current_photo))
+                disp_left.ShowImage(render_left(current_photo))
+                disp_right.ShowImage(render_right(current_photo))
+                display_dirty = False
+
+            time.sleep(60)  # Check for photo rotation every minute
 
     except KeyboardInterrupt:
         log.info("Exiting...")
