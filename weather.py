@@ -294,6 +294,9 @@ def fetch_weather():
         log.warning(f"Fetch failed: {e}")
         return {'ok': False}
 
+MAX_EARTH_PHOTOS = 12          # Number of images to rotate through
+UPDATE_LIST_SECONDS = 43200   # Refresh photo list every 12 hours
+
 def invalidate_earth_cache():
     """Clear earth image cache on error or expiry (Trick #10)"""
     global earth_image_cache
@@ -303,62 +306,78 @@ def invalidate_earth_cache():
     earth_image_cache['size_bytes'] = 0
     log.info("Earth cache invalidated")
 
-def fetch_earth_photo():
-    """Fetch latest Earth photo from NASA EPIC API with caching (Trick #2)"""
+def fetch_photos_list():
+    """
+    Fetch metadata for the last MAX_EARTH_PHOTOS images from NASA EPIC API.
+    Returns a list of metadata dicts (no images downloaded).
+    """
     try:
-        log.info("Fetching latest Earth photo from NASA EPIC...")
+        log.info("Fetching NASA EPIC image list...")
         api_url = "https://epic.gsfc.nasa.gov/api/natural"
 
         with urllib.request.urlopen(api_url, timeout=15) as response:
             images = json.loads(response.read())
 
         if not images:
-            return {'ok': False}
+            log.warning("No images available from NASA EPIC")
+            return []
 
-        latest = images[0]
-        image_name = latest['image']
-        date = latest['date']
+        photos = images[:MAX_EARTH_PHOTOS]
+        log.info(f"Got {len(photos)} images from NASA EPIC")
+        return photos
+
+    except Exception as e:
+        log.error(f"Failed to fetch photo list: {e}")
+        return []
+
+def fetch_earth_photo(meta, index, total):
+    """
+    Download a single NASA EPIC photo given its metadata dict (Trick #2 caching).
+    index/total are 1-based for display.
+    """
+    try:
+        image_name = meta['image']
+        date = meta['date']
 
         # Parse date for image URL
         date_parts = date.split(' ')[0].split('-')
         year, month, day = date_parts[0], date_parts[1], date_parts[2]
 
-        # Construct image URL (use JPG instead of PNG to save bandwidth)
-        # JPG is ~200KB vs PNG ~2MB for same 2048x2048 image
+        # Construct image URL (use JPG to save bandwidth: ~200KB vs ~2MB PNG)
         image_url = f"https://epic.gsfc.nasa.gov/archive/natural/{year}/{month}/{day}/jpg/{image_name}.jpg"
 
-        log.info(f"Downloading Earth photo: {image_name}.jpg")
+        log.info(f"Downloading Earth photo {index}/{total}: {image_name}.jpg")
 
-        # Download the image (loads directly into memory, not saved to disk)
         with urllib.request.urlopen(image_url, timeout=30) as img_response:
             image_data = img_response.read()
 
-        # Load from memory using BytesIO - no files created on disk
         earth_img = Image.open(BytesIO(image_data))
 
-        coords = latest.get('centroid_coordinates', {})
+        coords = meta.get('centroid_coordinates', {})
         lat = coords.get('lat', 0)
         lon = coords.get('lon', 0)
 
-        # OPTIMIZATION: Cache the resized image ONCE instead of resizing every render
+        # OPTIMIZATION: Cache the resized image ONCE (Trick #2)
         log.info("Caching resized Earth image (240x240)...")
         earth_image_cache['data'] = earth_img
         earth_image_cache['resized_240'] = earth_img.resize((240, 240), Image.LANCZOS)
         earth_image_cache['timestamp'] = time.time()
         earth_image_cache['size_bytes'] = len(image_data)
-        log.info(f"Cached Earth image (TTL: {earth_image_cache['ttl']}s, size: {len(image_data)//1024}KB)")
+        log.info(f"Cached Earth image {index}/{total} (size: {len(image_data)//1024}KB)")
 
         return {
             'ok': True,
             'image': earth_img,
             'date': date,
             'lat': round(lat, 1),
-            'lon': round(lon, 1)
+            'lon': round(lon, 1),
+            'index': index,
+            'total': total,
         }
 
     except Exception as e:
         log.error(f"Failed to fetch Earth photo: {e}")
-        invalidate_earth_cache()  # Clear stale cache on error
+        invalidate_earth_cache()
         return {'ok': False}
 
 
@@ -542,8 +561,10 @@ def render_left_earth(earth_data):
         draw.text((50, 32), "--", font=f(14), fill=(60, 60, 70))
         return img
 
-    # Title
-    draw.text((8, 6), "NASA EPIC", font=f(12), fill=(100, 150, 255))
+    # Title with image index
+    idx = earth_data.get('index', 1)
+    total = earth_data.get('total', MAX_EARTH_PHOTOS)
+    draw.text((8, 6), f"NASA EPIC {idx}/{total}", font=f(11), fill=(100, 150, 255))
 
     # Parse date from "YYYY-MM-DD HH:MM:SS"
     date_str = earth_data['date']
@@ -604,15 +625,15 @@ def fetch_weather_async(weather_ref, last_fetch_ref):
     threading.Thread(target=_fetch, daemon=True).start()
 
 
-def fetch_earth_async(earth_ref, last_fetch_ref):
-    """Async wrapper for Earth photo fetching"""
+def fetch_earth_async(earth_ref, meta, index, total):
+    """Async wrapper for Earth photo fetching – downloads one photo by metadata"""
     def _fetch():
-        log.info("Fetching Earth photo (async)...")
-        new_earth = fetch_earth_photo()
+        log.info(f"Fetching Earth photo {index}/{total} (async)...")
+        new_earth = fetch_earth_photo(meta, index, total)
         if new_earth['ok']:
             earth_ref['data'] = new_earth
             earth_ref['last_fetch'] = time.time()
-            log.info(f"Earth photo updated: {new_earth['date']}")
+            log.info(f"Earth photo {index}/{total} updated: {new_earth['date']}")
 
     threading.Thread(target=_fetch, daemon=True).start()
 
@@ -651,7 +672,13 @@ def main():
 
     # Data references for async fetching (Trick #4)
     weather_ref = {'data': {'ok': False}, 'last_fetch': 0}
-    earth_ref = {'data': {'ok': False}, 'last_fetch': 0}
+    earth_ref = {
+        'data': {'ok': False},
+        'last_fetch': 0,
+        'photos_list': [],       # Metadata for up to MAX_EARTH_PHOTOS images
+        'last_list_fetch': 0,    # When the photo list was last refreshed
+        'last_photo_hour': -1,   # Hour index of the last downloaded photo
+    }
 
     # Trick #8: Dirty Flag Rendering - state tracking to skip unnecessary renders
     last_render_state = {'hash': None}
@@ -678,7 +705,8 @@ def main():
             earth_data.get('ok'),
             earth_data.get('date'),
             earth_data.get('lat'),
-            earth_data.get('lon')
+            earth_data.get('lon'),
+            earth_data.get('index'),
         )
         return (weather_tuple, earth_tuple, wifi, swapped, time.strftime("%H:%M"))
 
@@ -754,6 +782,7 @@ def main():
     log.info("Weather station ready! (Burn-in protection + OPTIMIZATIONS enabled)")
     log.info(f"- Auto-dim after {DIM_TIMEOUT}s")
     log.info(f"- Screen swap every {SWAP_INTERVAL}s")
+    log.info(f"- NASA EPIC: rotating {MAX_EARTH_PHOTOS} images, one per hour")
     log.info(f"- Press KEY2 to cycle between weather and Earth photo")
     log.info("✓ Buttons ready using Waveshare GPIO library")
     log.info("✓ OPTIMIZATIONS: Image caching, WiFi caching, async fetching, double buffering,")
@@ -772,9 +801,26 @@ def main():
             if now - weather_ref['last_fetch'] >= UPDATE_SECONDS or weather_ref['last_fetch'] == 0:
                 fetch_weather_async(weather_ref, None)
 
-            # Trick #4: Async fetch Earth photo data (every 3600s = 720 cycles at 5s interval)
-            if now - earth_ref['last_fetch'] >= 3600 or earth_ref['last_fetch'] == 0:
-                fetch_earth_async(earth_ref, None)
+            # 12-image hourly rotation: refresh photo list every 12h, rotate photo each hour
+            current_hour = int(now // 3600)
+            if (now - earth_ref['last_list_fetch'] >= UPDATE_LIST_SECONDS
+                    or not earth_ref['photos_list']):
+                earth_ref['last_list_fetch'] = now  # set immediately to prevent duplicate spawns
+                def _refresh_list(ref=earth_ref):
+                    new_list = fetch_photos_list()
+                    if new_list:
+                        ref['photos_list'] = new_list
+                        ref['last_photo_hour'] = -1  # force photo reload on new list
+                        log.info(f"Photo list refreshed: {len(new_list)} images available")
+                threading.Thread(target=_refresh_list, daemon=True).start()
+
+            if earth_ref['photos_list'] and current_hour != earth_ref['last_photo_hour']:
+                photos = earth_ref['photos_list']
+                idx = current_hour % len(photos)
+                human_idx = idx + 1
+                total = len(photos)
+                earth_ref['last_photo_hour'] = current_hour
+                fetch_earth_async(earth_ref, photos[idx], human_idx, total)
 
             # Check for screen swap
             if now - last_swap_time >= SWAP_INTERVAL:
