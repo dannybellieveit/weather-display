@@ -413,7 +413,10 @@ def render_main(w, wifi):
     # Large Temperature - ADJUST TEMP_X and TEMP_Y AT TOP OF FILE TO POSITION
     tc = temp_col(w['temp'])
     temp_text = f"{w['temp']}°"
-    draw.text((TEMP_X, TEMP_Y), temp_text, font=f(85), fill=tc)
+    # Calculate text width and center it
+    bbox = draw.textbbox((0, 0), temp_text, font=f(85))
+    temp_w = bbox[2] - bbox[0]
+    draw.text((TEMP_X - temp_w/2, TEMP_Y), temp_text, font=f(85), fill=tc)
 
     # Feels like (centered)
     feels_text = f"Feels {w['feels']}°"
