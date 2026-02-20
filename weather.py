@@ -19,6 +19,7 @@ import os, sys, time, logging, urllib.request, json, subprocess, math, threading
 import spidev as SPI
 import RPi.GPIO as GPIO
 from io import BytesIO
+from datetime import datetime, time
 
 WAVESHARE_DIR = os.path.join(os.path.expanduser('~'), 'Zero_LCD_HAT_A_Demo', 'python')
 sys.path.append(WAVESHARE_DIR)
@@ -831,23 +832,35 @@ def main():
                 last_swap_time = now
                 log.info(f"Swapping screens (now: {'swapped' if screens_swapped else 'normal'})")
 
-            # Check for auto-dim
-            inactive_time = now - last_activity
-            should_be_dimmed = inactive_time >= DIM_TIMEOUT
+       # Check for auto-dim
+inactive_time = now - last_activity
+should_be_dimmed = inactive_time >= DIM_TIMEOUT
 
-            if should_be_dimmed and not is_dimmed:
-                log.info("Auto-dimming displays")
-                disp_main.bl_DutyCycle(int(BL_MAIN_DUTY * 0.2))
-                disp_left.bl_DutyCycle(int(BL_SIDE_DUTY * 0.2))
-                disp_right.bl_DutyCycle(int(BL_SIDE_DUTY * 0.2))
-                is_dimmed = True
+# Check if we're in night hours (00:00 - 07:00)
+current_time = datetime.now().time()
+is_night_hours = current_time >= time(0, 0) or current_time < time(7, 0)
 
-            elif not should_be_dimmed and is_dimmed:
-                log.info("Restoring brightness")
-                disp_main.bl_DutyCycle(BL_MAIN_DUTY)
-                disp_left.bl_DutyCycle(BL_SIDE_DUTY)
-                disp_right.bl_DutyCycle(BL_SIDE_DUTY)
-                is_dimmed = False
+if should_be_dimmed and not is_dimmed:
+    if is_night_hours:
+        # Night mode: turn backlight completely off
+        log.info("Night mode - turning backlight off (00:00-07:00)")
+        disp_main.bl_DutyCycle(0)
+        disp_left.bl_DutyCycle(0)
+        disp_right.bl_DutyCycle(0)
+    else:
+        # Day mode: dim to 20%
+        log.info("Auto-dimming displays")
+        disp_main.bl_DutyCycle(int(BL_MAIN_DUTY * 0.2))
+        disp_left.bl_DutyCycle(int(BL_SIDE_DUTY * 0.2))
+        disp_right.bl_DutyCycle(int(BL_SIDE_DUTY * 0.2))
+    is_dimmed = True
+
+elif not should_be_dimmed and is_dimmed:
+    log.info("Restoring brightness")
+    disp_main.bl_DutyCycle(BL_MAIN_DUTY)
+    disp_left.bl_DutyCycle(BL_SIDE_DUTY)
+    disp_right.bl_DutyCycle(BL_SIDE_DUTY)
+    is_dimmed = False
 
             # Trick #5: Update double buffers (pre-render both pages)
             buffers_changed = update_frame_buffers()
