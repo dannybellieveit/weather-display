@@ -838,7 +838,7 @@ should_be_dimmed = inactive_time >= DIM_TIMEOUT
 
 # Check if we're in night hours (00:00 - 07:00)
 current_time = datetime.now().time()
-is_night_hours = current_time >= time(0, 0) or current_time < time(7, 0)
+is_night_hours = current_time >= time(0, 0) and current_time < time(7, 0)
 
 if should_be_dimmed and not is_dimmed:
     if is_night_hours:
