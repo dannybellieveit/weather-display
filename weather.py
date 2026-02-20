@@ -416,7 +416,9 @@ def render_main(w, wifi):
     # Calculate text width and center it
     bbox = draw.textbbox((0, 0), temp_text, font=f(85))
     temp_w = bbox[2] - bbox[0]
-    draw.text((TEMP_X- temp_w/4, TEMP_Y), temp_text, font=f(85), fill=tc) # - temp_w/2 
+    adjustment_factor = 0.2  # Experiment with this value
+    draw.text((TEMP_X - temp_w * adjustment_factor, TEMP_Y), temp_text, font=f(85), fill=tc)
+
 
     # Feels like (centered)
     feels_text = f"Feels {w['feels']}°"
