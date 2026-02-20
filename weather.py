@@ -19,7 +19,7 @@ import os, sys, time, logging, urllib.request, json, subprocess, math, threading
 import spidev as SPI
 import RPi.GPIO as GPIO
 from io import BytesIO
-from datetime import datetime, time
+from datetime import datetime
 
 WAVESHARE_DIR = os.path.join(os.path.expanduser('~'), 'Zero_LCD_HAT_A_Demo', 'python')
 sys.path.append(WAVESHARE_DIR)
