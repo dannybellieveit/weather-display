@@ -688,7 +688,7 @@ def main():
     }
 
     # Trick #8: Dirty Flag Rendering - state tracking to skip unnecessary renders
-    last_render_state = {'hash': None}
+    last_render_state = {'hash': None, 'time': None}
     last_displayed_page = None
 
     def compute_state_hash(weather, earth_data, wifi, swapped):
@@ -715,11 +715,16 @@ def main():
             earth_data.get('lon'),
             earth_data.get('index'),
         )
-        return (weather_tuple, earth_tuple, wifi, swapped, time.strftime("%H:%M"))
+        return (weather_tuple, earth_tuple, wifi, swapped)
 
     # Trick #5 & #8: Double Buffering with Dirty Flag - only render when state changes
     def update_frame_buffers():
-        """Pre-render both pages into buffers only when data changes (Tricks #5, #8)"""
+        """Pre-render both pages into buffers only when data changes (Tricks #5, #8).
+
+        Returns 'data' if weather/earth data changed (all screens need updating),
+        'time' if only the clock minute changed (main screen only needs updating),
+        or False if nothing changed.
+        """
         nonlocal last_render_state
 
         with buffer_lock:
@@ -727,14 +732,15 @@ def main():
             weather = weather_ref['data']
             earth_data = earth_ref['data']
 
-            # Compute current state hash
+            # Compute current state hash (data only — time tracked separately)
             current_state = compute_state_hash(weather, earth_data, wifi, screens_swapped)
+            current_time = time.strftime("%H:%M")
 
-            # Check if anything changed (Trick #8: Dirty Flag)
-            state_changed = (current_state != last_render_state['hash'])
+            data_changed = (current_state != last_render_state['hash'])
+            time_changed = (current_time != last_render_state['time'])
 
-            if state_changed:
-                log.debug("Rendering: state changed")
+            if data_changed:
+                log.debug("Rendering: data state changed")
 
                 # Render weather page
                 frame_buffers['weather']['main'] = render_main(weather, wifi)
@@ -750,9 +756,18 @@ def main():
                 frame_buffers['earth']['left'] = render_left_earth(earth_data)
                 frame_buffers['earth']['right'] = render_right_earth(earth_data)
 
-                # Update state tracker
                 last_render_state['hash'] = current_state
-                return True
+                last_render_state['time'] = current_time
+                return 'data'
+
+            elif time_changed:
+                # Only the clock changed: re-render main weather screen only.
+                # Side screens show humidity/wind/sunrise — they have no clock, no need to flicker.
+                log.debug("Rendering: time-only change, main screen only")
+                frame_buffers['weather']['main'] = render_main(weather, wifi)
+                last_render_state['time'] = current_time
+                return 'time'
+
             else:
                 log.debug("Skipped render: state unchanged")
                 return False
@@ -869,13 +884,21 @@ def main():
 
             # Trick #3: Lazy Rendering - only push to displays when content changed
             page_changed = (current_page != last_displayed_page)
-            if buffers_changed or page_changed:
+            if buffers_changed == 'data' or page_changed:
+                # Data changed or page switched: update all three screens
                 with buffer_lock:
                     page_buffer = frame_buffers.get(current_page)
                     if page_buffer and page_buffer['main']:
                         disp_main.ShowImage(page_buffer['main'])
                         disp_left.ShowImage(page_buffer['left'])
                         disp_right.ShowImage(page_buffer['right'])
+                        last_displayed_page = current_page
+            elif buffers_changed == 'time' and current_page == 'weather':
+                # Clock ticked: only the main screen needs updating.
+                # Side screens don't show the time, so leave them alone.
+                with buffer_lock:
+                    if frame_buffers['weather']['main']:
+                        disp_main.ShowImage(frame_buffers['weather']['main'])
                         last_displayed_page = current_page
 
             # Trick #6: Faster loop = more responsive button handling (5s vs 30s)
