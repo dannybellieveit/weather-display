@@ -11,6 +11,7 @@ Right screen (0.96" 160x80): Sun times / Humidity & Wind (swaps hourly)
 
 Burn-in prevention:
 - Auto-dim to 20% after 2 minutes
+- Backlight fully off between 00:00 and 07:00 when dimmed
 - KEY1 button to wake
 - Screens swap every hour
 """
@@ -648,6 +649,7 @@ def main():
     # State tracking
     last_activity = time.time()
     is_dimmed = False
+    was_night_dim = False  # tracks whether last dim used night-off (duty=0)
     screens_swapped = False
     last_swap_time = time.time()
     current_page = 'weather'  # 'weather' or 'earth'
@@ -833,21 +835,34 @@ def main():
                 last_swap_time = now
                 log.info(f"Swapping screens (now: {'swapped' if screens_swapped else 'normal'})")
 
-            # Check for auto-dim
+            # Check for auto-dim / night schedule
             inactive_time = now - last_activity
             should_be_dimmed = inactive_time >= DIM_TIMEOUT
-            
-            if should_be_dimmed and not is_dimmed:
-                log.info("Auto-dimming displays")
-                disp_main.bl_DutyCycle(int(BL_MAIN_DUTY * 0.2))
-                disp_left.bl_DutyCycle(int(BL_SIDE_DUTY * 0.2))
-                disp_right.bl_DutyCycle(int(BL_SIDE_DUTY * 0.2))
-                is_dimmed = True
-            
-            elif not should_be_dimmed and is_dimmed:
+            is_night = 0 <= time.localtime(now).tm_hour < 7
+
+            if should_be_dimmed:
+                # Re-apply if not yet dimmed, or night status changed while dimmed
+                if not is_dimmed or is_night != was_night_dim:
+                    if is_night:
+                        log.info("Night schedule: turning backlight off (00:00–07:00)")
+                        disp_main.bl_DutyCycle(0)
+                        disp_left.bl_DutyCycle(0)
+                        disp_right.bl_DutyCycle(0)
+                    else:
+                        log.info("Auto-dimming displays")
+                        disp_main.bl_DutyCycle(int(BL_MAIN_DUTY * 0.2))
+                        disp_left.bl_DutyCycle(int(BL_SIDE_DUTY * 0.2))
+                        disp_right.bl_DutyCycle(int(BL_SIDE_DUTY * 0.2))
+                    is_dimmed = True
+                    was_night_dim = is_night
+
+            elif is_dimmed:
                 log.info("Restoring brightness")
                 disp_main.bl_DutyCycle(BL_MAIN_DUTY)
                 disp_left.bl_DutyCycle(BL_SIDE_DUTY)
+                disp_right.bl_DutyCycle(BL_SIDE_DUTY)
+                is_dimmed = False
+                was_night_dim = False
 
             # Trick #5: Update double buffers (pre-render both pages)
             buffers_changed = update_frame_buffers()
