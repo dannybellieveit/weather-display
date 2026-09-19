@@ -13,7 +13,7 @@ Two physical buttons: **KEY1** wakes the display from auto-dim, **KEY2** cycles 
    - Left (0.96" 160x80): humidity & wind
    - Right (0.96" 160x80): sunrise & sunset
 2. **Earth photo** — the latest NASA EPIC natural-colour photo of Earth, rotating through the last 12 available images (one new download per hour), with capture date/time and centroid lat/lon on the side screens
-3. **Moon phase** — current phase name and illumination %, computed locally (no network call), with next full/new moon dates on the side screens
+3. **Moon phase** — current phase name and illumination % (computed locally, no network call); side screens show today's moonrise/moonset (via [PyEphem](https://rhodesmill.org/pyephem/), which does need real lat/lon astronomy — unlike the phase math, rise/set isn't something worth hand-deriving) and the next full/new moon dates
 
 Weather data comes from [Open-Meteo](https://open-meteo.com/) (free, no API key needed) using the UK Met Office (UKMO) model.
 

@@ -41,7 +41,7 @@ fi
 # Install Python dependencies
 echo "→ Installing Python packages..."
 sudo apt-get update -qq
-sudo apt-get install -y -qq git python3-pip python3-pil python3-spidev python3-numpy python3-requests python3-rpi.gpio python3-gpiozero python3-lgpio
+sudo apt-get install -y -qq git python3-pip python3-pil python3-spidev python3-numpy python3-requests python3-rpi.gpio python3-gpiozero python3-lgpio python3-ephem
 
 # Enable SPI + the extra overlays the triple-screen setup needs
 BOOTCONFIG="/boot/config.txt"

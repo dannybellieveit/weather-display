@@ -24,6 +24,8 @@ touching source — the auto-updater's `git reset --hard` won't touch it.
 import os, sys, time, logging, urllib.request, json, subprocess, math, threading
 import spidev as SPI
 import RPi.GPIO as GPIO
+import ephem
+from datetime import datetime, timezone
 from io import BytesIO
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -737,6 +739,41 @@ def next_moon_events(t=None):
     new_str = time.strftime('%d %b', time.localtime(t + days_to_new * 86400))
     return full_str, new_str
 
+def moon_rise_set(lat, lon, t=None):
+    """Return (rise_str, set_str) as local 'HH:MM' describing one coherent
+    visible arc — using pyephem for real observer-position astronomy, since
+    unlike the phase/illumination maths above, rise/set genuinely depends
+    on latitude/longitude and isn't worth hand-deriving from scratch.
+
+    The moon rises/sets roughly every 24h50m, not once per calendar day, so
+    naively pairing next_rising with next_setting can describe two different
+    arcs (e.g. tonight's already-in-progress set with tomorrow's rise, which
+    would render as a set time earlier than the rise time next to it). If
+    the moon is already up, we pair its previous rise with its next set —
+    the arc actually in progress — rather than always looking forward."""
+    if t is None:
+        t = time.time()
+    obs = ephem.Observer()
+    obs.lat = str(lat)
+    obs.lon = str(lon)
+    obs.date = ephem.Date(datetime.fromtimestamp(t, tz=timezone.utc))
+    moon = ephem.Moon()
+    moon.compute(obs)
+    currently_up = moon.alt > 0
+
+    try:
+        rise = obs.previous_rising(moon) if currently_up else obs.next_rising(moon)
+        rise_str = ephem.localtime(rise).strftime('%H:%M')
+    except (ephem.NeverUpError, ephem.AlwaysUpError):
+        rise_str = "--:--"
+
+    try:
+        set_str = ephem.localtime(obs.next_setting(moon)).strftime('%H:%M')
+    except (ephem.NeverUpError, ephem.AlwaysUpError):
+        set_str = "--:--"
+
+    return rise_str, set_str
+
 def draw_moon(draw, cx, cy, r, illumination, waxing):
     """Hand-drawn moon disc with a terminator shadow, in the style of the sun icons."""
     moon_col = (225, 222, 205)
@@ -791,19 +828,43 @@ def render_main_moon():
     return img
 
 def render_left_moon():
+    """Today's next moonrise & moonset, split left/right like the sunrise/sunset screen."""
     img = Image.new("RGB", (160, 80), (10, 10, 14))
     draw = ImageDraw.Draw(img)
-    full_date, _ = next_moon_events()
-    draw.text((8, 8), "NEXT FULL", font=f(10), fill=(80, 80, 95))
-    draw.text((8, 28), full_date, font=f(22), fill=(220, 218, 200))
+    rise_str, set_str = moon_rise_set(LAT, LON)
+
+    draw.text((8, 8), "RISE", font=f(10), fill=(50, 50, 65))
+    bbox = draw.textbbox((0, 0), rise_str, font=f(18))
+    w = bbox[2] - bbox[0]
+    draw.text((40 - w / 2, 30), rise_str, font=f(18), fill=(220, 200, 150))
+
+    draw.line([(80, 10), (80, 70)], fill=(25, 25, 35), width=1)
+
+    draw.text((88, 8), "SET", font=f(10), fill=(50, 50, 65))
+    bbox = draw.textbbox((0, 0), set_str, font=f(18))
+    w = bbox[2] - bbox[0]
+    draw.text((120 - w / 2, 30), set_str, font=f(18), fill=(180, 160, 200))
+
     return img
 
 def render_right_moon():
+    """Next full & next new moon dates, split left/right."""
     img = Image.new("RGB", (160, 80), (10, 10, 14))
     draw = ImageDraw.Draw(img)
-    _, new_date = next_moon_events()
-    draw.text((8, 8), "NEXT NEW", font=f(10), fill=(80, 80, 95))
-    draw.text((8, 28), new_date, font=f(22), fill=(150, 150, 175))
+    full_date, new_date = next_moon_events()
+
+    draw.text((8, 8), "FULL", font=f(10), fill=(50, 50, 65))
+    bbox = draw.textbbox((0, 0), full_date, font=f(16))
+    w = bbox[2] - bbox[0]
+    draw.text((40 - w / 2, 30), full_date, font=f(16), fill=(220, 218, 200))
+
+    draw.line([(80, 10), (80, 70)], fill=(25, 25, 35), width=1)
+
+    draw.text((88, 8), "NEW", font=f(10), fill=(50, 50, 65))
+    bbox = draw.textbbox((0, 0), new_date, font=f(16))
+    w = bbox[2] - bbox[0]
+    draw.text((120 - w / 2, 30), new_date, font=f(16), fill=(150, 150, 175))
+
     return img
 
 
