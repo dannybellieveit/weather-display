@@ -21,26 +21,34 @@ fi
 
 cd "$REPO_DIR"
 
-# Check for Waveshare library
+# Check for Waveshare library (distributed as a zip on Waveshare's wiki, not git)
 if [ ! -d "$WAVESHARE_DIR/lib" ]; then
-    echo "→ Waveshare library not found, cloning..."
+    echo "→ Waveshare library not found, downloading..."
     cd "$HOME"
-    git clone https://github.com/waveshare/Zero_LCD_HAT_A_Demo.git
+    sudo apt-get update -qq
+    sudo apt-get install -y -qq unzip
+    wget -q https://files.waveshare.com/wiki/Zero-LCD-HAT-A/Zero_LCD_HAT_A_Demo.zip
+    unzip -q -o Zero_LCD_HAT_A_Demo.zip
+    rm -f Zero_LCD_HAT_A_Demo.zip
     cd "$REPO_DIR"
 fi
 
 # Install Python dependencies
 echo "→ Installing Python packages..."
 sudo apt-get update -qq
-sudo apt-get install -y -qq python3-pip python3-pil python3-spidev
+sudo apt-get install -y -qq git python3-pip python3-pil python3-spidev python3-numpy python3-requests python3-rpi.gpio
 
-# Enable SPI if not already
-if ! grep -q "^dtparam=spi=on" /boot/config.txt 2>/dev/null && \
-   ! grep -q "^dtparam=spi=on" /boot/firmware/config.txt 2>/dev/null; then
-    echo "→ Enabling SPI..."
-    echo "dtparam=spi=on" | sudo tee -a /boot/config.txt >/dev/null
-    echo "  ⚠ SPI enabled - reboot required after install"
-fi
+# Enable SPI + the extra overlays the triple-screen setup needs
+BOOTCONFIG="/boot/config.txt"
+[ -f /boot/firmware/config.txt ] && BOOTCONFIG="/boot/firmware/config.txt"
+for LINE in "dtparam=spi=on" "dtoverlay=spi1-1cs" "dtoverlay=spi0-2cs"; do
+    if ! grep -q "^${LINE}$" "$BOOTCONFIG" 2>/dev/null; then
+        echo "→ Adding $LINE..."
+        echo "$LINE" | sudo tee -a "$BOOTCONFIG" >/dev/null
+        NEEDS_REBOOT=1
+    fi
+done
+[ -n "$NEEDS_REBOOT" ] && echo "  ⚠ Boot config changed - reboot required after install"
 
 # Create systemd service (run as actual user, not root)
 echo "→ Creating systemd service..."
@@ -55,6 +63,7 @@ Type=simple
 User=$ACTUAL_USER
 WorkingDirectory=$ACTUAL_HOME/weather-display
 Environment="HOME=$ACTUAL_HOME"
+Environment="GPIOZERO_PIN_FACTORY=RPiGPIO"
 ExecStart=/usr/bin/python3 $ACTUAL_HOME/weather-display/weather.py
 Restart=always
 RestartSec=10

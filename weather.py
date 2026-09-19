@@ -674,8 +674,11 @@ def main():
     disp_right.bl_DutyCycle(BL_SIDE_DUTY)
 
     # Setup buttons using Waveshare's GPIO library
-    key1 = disp_left.gpio_mode(KEY1_PIN, disp_left.INPUT, None)
-    key2 = disp_left.gpio_mode(KEY2_PIN, disp_left.INPUT, None)
+    from gpiozero import DigitalInputDevice
+    from gpiozero.pins.lgpio import LGPIOFactory
+    _button_factory = LGPIOFactory()
+    key1 = DigitalInputDevice(KEY1_PIN, pull_up=None, active_state=True, pin_factory=_button_factory)
+    key2 = DigitalInputDevice(KEY2_PIN, pull_up=None, active_state=True, pin_factory=_button_factory)
 
     # Data references for async fetching (Trick #4)
     weather_ref = {'data': {'ok': False}, 'last_fetch': 0}
