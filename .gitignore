@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 wifi-creds.txt
 *.backup-*
+config.json
+.weather_cache.json

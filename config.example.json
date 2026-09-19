@@ -1,0 +1,13 @@
+{
+  "lat": 51.4279,
+  "lon": -0.1255,
+  "city": "Streatham",
+  "bl_main_duty": 90,
+  "bl_side_duty": 45,
+  "update_seconds": 300,
+  "temp_x": 90,
+  "temp_y": 40,
+  "dim_timeout": 120,
+  "night_start_hour": 0,
+  "night_end_hour": 7
+}

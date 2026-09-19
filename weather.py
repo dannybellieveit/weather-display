@@ -6,14 +6,19 @@ Custom Design by Danny
 https://github.com/dannybellieveit/weather-display
 
 Main screen (1.3" 240x240): Current conditions with UV, high/low, time
-Left screen  (0.96" 160x80): Humidity & Wind / Sun times (swaps hourly)
-Right screen (0.96" 160x80): Sun times / Humidity & Wind (swaps hourly)
+Left screen  (0.96" 160x80): Humidity & Wind
+Right screen (0.96" 160x80): Sun times
+
+KEY2 cycles between three pages: weather / NASA Earth photo / moon phase.
 
 Burn-in prevention:
 - Auto-dim to 20% after 2 minutes
 - Backlight fully off between 00:00 and 07:00 when dimmed
 - KEY1 button to wake
-- Screens swap every hour
+
+Local config: copy config.example.json to config.json (gitignored, sits
+next to this script) to override location/brightness/timing without
+touching source — the auto-updater's `git reset --hard` won't touch it.
 """
 
 import os, sys, time, logging, urllib.request, json, subprocess, math, threading
@@ -21,7 +26,16 @@ import spidev as SPI
 import RPi.GPIO as GPIO
 from io import BytesIO
 
-WAVESHARE_DIR = os.path.join(os.path.expanduser('~'), 'Zero_LCD_HAT_A_Demo', 'python')
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+VENDORED_WAVESHARE_DIR = os.path.join(SCRIPT_DIR, 'vendor', 'waveshare')
+DOWNLOADED_WAVESHARE_DIR = os.path.join(os.path.expanduser('~'), 'Zero_LCD_HAT_A_Demo', 'python')
+
+# Prefer the driver files vendored in this repo; fall back to the
+# separately-downloaded copy (see install.sh) only if vendoring is missing.
+if os.path.isdir(os.path.join(VENDORED_WAVESHARE_DIR, 'lib')):
+    WAVESHARE_DIR = VENDORED_WAVESHARE_DIR
+else:
+    WAVESHARE_DIR = DOWNLOADED_WAVESHARE_DIR
 sys.path.append(WAVESHARE_DIR)
 from lib import LCD_1inch3, LCD_0inch96
 from PIL import Image, ImageDraw, ImageFont
@@ -47,35 +61,71 @@ wifi_cache = {
 }
 
 # Trick #5: Double Buffering - pre-rendered frames for instant page switching
+PAGES = ['weather', 'earth', 'moon']
 frame_buffers = {
     'weather': {'main': None, 'left': None, 'right': None},
-    'earth': {'main': None, 'left': None, 'right': None}
+    'earth': {'main': None, 'left': None, 'right': None},
+    'moon': {'main': None, 'left': None, 'right': None},
 }
 
 # Lock for thread-safe buffer updates
 buffer_lock = threading.Lock()
 
-# ── Pins ──────────────────────────────────────────────────────────────────────
+# ── Pins (fixed by the HAT's wiring, not user-configurable) ────────────────────
 RST_MAIN, DC_MAIN, BL_MAIN, BUS_MAIN, DEV_MAIN = 27, 22, 19, 1, 0
 RST_L,    DC_L,    BL_L,    BUS_L,    DEV_L    = 24,  4, 13, 0, 0
 RST_R,    DC_R,    BL_R,    BUS_R,    DEV_R    = 23,  5, 12, 0, 1
 KEY1_PIN = 25  # Wake button
-KEY2_PIN = 26  # Reserved for page cycling
+KEY2_PIN = 26  # Page cycling
+
+# ── Local config (config.json, gitignored) ─────────────────────────────────────
+# Overrides the defaults below without touching source, and survives the
+# auto-updater's `git reset --hard origin/main` since it's untracked.
+CONFIG_PATH = os.path.join(SCRIPT_DIR, 'config.json')
+
+DEFAULT_CONFIG = {
+    'lat': 51.4279,
+    'lon': -0.1255,
+    'city': 'Streatham',
+    'bl_main_duty': 90,     # Main screen brightness (0-100)
+    'bl_side_duty': 45,     # Side screens brightness (0-100)
+    'update_seconds': 300,  # Weather fetch interval
+    'temp_x': 90,           # Big-temperature X position (0-240)
+    'temp_y': 40,           # Big-temperature Y position (0-240)
+    'dim_timeout': 120,     # Seconds idle before auto-dim
+    'night_start_hour': 0,  # Backlight fully off from this hour...
+    'night_end_hour': 7,    # ...until this hour, while dimmed
+}
+
+def _load_config():
+    cfg = dict(DEFAULT_CONFIG)
+    try:
+        with open(CONFIG_PATH) as fp:
+            user_cfg = json.load(fp)
+        cfg.update({k: v for k, v in user_cfg.items() if k in DEFAULT_CONFIG})
+    except FileNotFoundError:
+        pass
+    except (json.JSONDecodeError, OSError) as e:
+        log.warning(f"Failed to load config.json, using defaults: {e}")
+    return cfg
+
+CFG = _load_config()
+
+LAT, LON, CITY = CFG['lat'], CFG['lon'], CFG['city']
+UPDATE_SECONDS = CFG['update_seconds']
 
 # ── Display Settings ──────────────────────────────────────────────────────────
-BL_MAIN_DUTY = 90   # Main screen brightness (0-100)
-BL_SIDE_DUTY = 45   # Side screens brightness (0-100)
-
-LAT, LON, CITY = 51.4279, -0.1255, "Streatham"
-UPDATE_SECONDS = 300
+BL_MAIN_DUTY = CFG['bl_main_duty']
+BL_SIDE_DUTY = CFG['bl_side_duty']
 
 # ── Manual Positioning (Adjust these to move the temperature!) ───────────────
-TEMP_X = 90   # X position: adjust to move left/right (0-240)
-TEMP_Y = 40  # Y position: adjust to move up/down (0-240)
+TEMP_X = CFG['temp_x']   # X position: adjust to move left/right (0-240)
+TEMP_Y = CFG['temp_y']   # Y position: adjust to move up/down (0-240)
 
 # ── Burn-in Prevention Settings ───────────────────────────────────────────────
-DIM_TIMEOUT = 120    # Seconds before auto-dim (2 minutes)
-SWAP_INTERVAL = 3600  # Seconds between screen swaps (1 hour)
+DIM_TIMEOUT = CFG['dim_timeout']         # Seconds before auto-dim (2 minutes)
+NIGHT_START_HOUR = CFG['night_start_hour']
+NIGHT_END_HOUR = CFG['night_end_hour']
 
 # ── Fonts ─────────────────────────────────────────────────────────────────────
 FONT_DIR = os.path.join(WAVESHARE_DIR, 'Font')
@@ -184,6 +234,18 @@ def draw_wifi(draw, x, y, connected, col_on=(80,220,120), col_off=(180,60,60)):
     draw.arc([x+1,y+4,x+11,y+14], start=210, end=330, fill=col, width=2)
     draw.arc([x-2,y,x+14,y+16], start=210, end=330, fill=col, width=2)
 
+def draw_suncream(draw, x, y, h=16):
+    """Small suncream-bottle icon (hand-drawn: the display font has no emoji
+    glyphs, so an actual 🧴 character silently renders as nothing)."""
+    bottle_col = (240, 210, 90)
+    cap_col = (210, 170, 60)
+    w = int(h * 0.62)
+    cap_w = max(2, int(w * 0.45))
+    cap_h = max(2, int(h * 0.2))
+    body_top = y + cap_h
+    draw.rectangle([x + (w - cap_w) // 2, y, x + (w - cap_w) // 2 + cap_w, body_top], fill=cap_col)
+    draw.rounded_rectangle([x, body_top, x + w, y + h], radius=2, fill=bottle_col)
+
 # ── Graphics ──────────────────────────────────────────────────────────────────
 def draw_sunrise(draw, cx, cy, r=12):
     sun_col = (255, 190, 60)
@@ -257,6 +319,23 @@ def _calc_precip_duration(hourly, current_code):
     if hours >= len(codes) - start_idx:
         return f"{hours}h+"
     return f"~{hours}h"
+
+WEATHER_CACHE_PATH = os.path.join(SCRIPT_DIR, '.weather_cache.json')
+
+def _save_weather_cache(data):
+    """Persist the last successful fetch so a restart shows real data, not 'No Data'."""
+    try:
+        with open(WEATHER_CACHE_PATH, 'w') as fp:
+            json.dump(data, fp)
+    except OSError as e:
+        log.warning(f"Failed to save weather cache: {e}")
+
+def _load_weather_cache():
+    try:
+        with open(WEATHER_CACHE_PATH) as fp:
+            return json.load(fp)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {'ok': False}
 
 def fetch_weather():
     url = (
@@ -436,9 +515,13 @@ def render_main(w, wifi):
     cond_w = bbox[2] - bbox[0]
     draw.text((120 - cond_w/2, 158), cond, font=f(20), fill=(200, 200, 210))
 
-    # Bottom Left: UV Index
+    # Bottom Left: UV Index (WHO recommends sunscreen from UV 3 upward)
     uv_text = f"UV {w['uv']}"
     draw.text((12, 210), uv_text, font=f(20), fill=uv_col(w['uv']))
+    if w['uv'] >= 3:
+        bbox = draw.textbbox((0, 0), uv_text, font=f(20))
+        uv_w = bbox[2] - bbox[0]
+        draw_suncream(draw, 12 + uv_w + 8, 211, h=18)
 
     # Bottom Center: Time (properly centered)
     time_text = time.strftime("%H:%M")
@@ -614,32 +697,160 @@ def render_right_earth(earth_data):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  MOON PHASE — pure local calendar math, no network call
+# ══════════════════════════════════════════════════════════════════════════════
+SYNODIC_MONTH = 29.530588861  # days per lunar cycle
+_KNOWN_NEW_MOON = 946_845_240  # 2000-01-06 18:14 UTC, a reference new moon (unix epoch)
+
+def moon_phase(t=None):
+    """Return (phase_name, illumination 0-1, days_into_cycle) for time t (default: now)."""
+    if t is None:
+        t = time.time()
+    days = ((t - _KNOWN_NEW_MOON) / 86400.0) % SYNODIC_MONTH
+    illumination = (1 - math.cos(2 * math.pi * days / SYNODIC_MONTH)) / 2
+    if days < 1.84566:
+        name = "New Moon"
+    elif days < 5.53699:
+        name = "Waxing Crescent"
+    elif days < 9.22831:
+        name = "First Quarter"
+    elif days < 12.91963:
+        name = "Waxing Gibbous"
+    elif days < 16.61096:
+        name = "Full Moon"
+    elif days < 20.30228:
+        name = "Waning Gibbous"
+    elif days < 23.99361:
+        name = "Last Quarter"
+    else:
+        name = "Waning Crescent"
+    return name, illumination, days
+
+def next_moon_events(t=None):
+    """Return (next_full_moon_str, next_new_moon_str) as '%d %b' dates."""
+    if t is None:
+        t = time.time()
+    _, _, days = moon_phase(t)
+    days_to_full = (14.76529 - days) % SYNODIC_MONTH
+    days_to_new = (SYNODIC_MONTH - days) % SYNODIC_MONTH
+    full_str = time.strftime('%d %b', time.localtime(t + days_to_full * 86400))
+    new_str = time.strftime('%d %b', time.localtime(t + days_to_new * 86400))
+    return full_str, new_str
+
+def draw_moon(draw, cx, cy, r, illumination, waxing):
+    """Hand-drawn moon disc with a terminator shadow, in the style of the sun icons."""
+    moon_col = (225, 222, 205)
+    shadow_col = (14, 14, 22)
+
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=moon_col)
+
+    if illumination >= 0.999:
+        return  # full moon: no shadow to draw
+    if illumination <= 0.001:
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=shadow_col)
+        return
+
+    # Two overlapping shapes approximate the lunar terminator: a half-disc of
+    # shadow, then a centred ellipse (width set by illumination) painted back
+    # over it — shrinking the shadow for a crescent, or restoring lit colour
+    # for a gibbous — to produce the correct waxing/waning silhouette.
+    # Width is 0 at quarter (a straight-line terminator, pure half/half) and
+    # a full diameter at new/full (where the "ellipse" coincides with the
+    # disc edge itself, pushing the whole disc to one colour).
+    terminator_w = int(r * 2 * abs(1 - 2 * illumination))
+    # Northern-hemisphere convention: waxing shows its growing sliver/shadow
+    # on the right, so the shadow half starts on the LEFT for waxing.
+    shadow_on_right = not waxing
+
+    if shadow_on_right:
+        draw.pieslice([cx - r, cy - r, cx + r, cy + r], -90, 90, fill=shadow_col)
+    else:
+        draw.pieslice([cx - r, cy - r, cx + r, cy + r], 90, 270, fill=shadow_col)
+
+    # Below 50% lit: push further toward dark (crescent). At/above 50%: push
+    # back toward lit (gibbous) — restoring lit colour over the shadow half.
+    fill_col = shadow_col if illumination < 0.5 else moon_col
+    draw.ellipse([cx - terminator_w // 2, cy - r, cx + terminator_w // 2, cy + r], fill=fill_col)
+
+def render_main_moon():
+    img = Image.new("RGB", (240, 240), (6, 6, 14))
+    draw = ImageDraw.Draw(img)
+
+    name, illumination, days = moon_phase()
+    draw_moon(draw, 120, 100, r=65, illumination=illumination, waxing=(days < SYNODIC_MONTH / 2))
+
+    pct_text = f"{round(illumination * 100)}%"
+    bbox = draw.textbbox((0, 0), pct_text, font=f(22))
+    w = bbox[2] - bbox[0]
+    draw.text((120 - w / 2, 190), pct_text, font=f(22), fill=(210, 210, 225))
+
+    bbox = draw.textbbox((0, 0), name, font=f(16))
+    w = bbox[2] - bbox[0]
+    draw.text((120 - w / 2, 216), name, font=f(16), fill=(150, 150, 170))
+
+    return img
+
+def render_left_moon():
+    img = Image.new("RGB", (160, 80), (10, 10, 14))
+    draw = ImageDraw.Draw(img)
+    full_date, _ = next_moon_events()
+    draw.text((8, 8), "NEXT FULL", font=f(10), fill=(80, 80, 95))
+    draw.text((8, 28), full_date, font=f(22), fill=(220, 218, 200))
+    return img
+
+def render_right_moon():
+    img = Image.new("RGB", (160, 80), (10, 10, 14))
+    draw = ImageDraw.Draw(img)
+    _, new_date = next_moon_events()
+    draw.text((8, 8), "NEXT NEW", font=f(10), fill=(80, 80, 95))
+    draw.text((8, 28), new_date, font=f(22), fill=(150, 150, 175))
+    return img
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  OPTIMIZATION HELPERS (Tricks #1, #4, #5)
 # ══════════════════════════════════════════════════════════════════════════════
 
+# Retry backoff: 30s, 60s, 120s... capped at `cap` seconds (the normal interval)
+def _backoff_seconds(fail_count, cap):
+    if fail_count <= 0:
+        return cap
+    return min(cap, 30 * (2 ** (fail_count - 1)))
+
 # Trick #4: Async background fetching - prevents blocking on network timeouts
-def fetch_weather_async(weather_ref, last_fetch_ref):
-    """Async wrapper for weather fetching"""
+def fetch_weather_async(weather_ref):
+    """Async wrapper for weather fetching. Caller stamps last_attempt before
+    calling this (see main loop) so the retry gate updates immediately,
+    not only after the network call completes — otherwise a slow/failing
+    fetch lets the 5s loop spawn a new thread every tick indefinitely."""
     def _fetch():
         log.info("Fetching weather (async)...")
         new = fetch_weather()
         if new['ok']:
             weather_ref['data'] = new
-            weather_ref['last_fetch'] = time.time()
+            weather_ref['fail_count'] = 0
+            _save_weather_cache(new)
             log.info(f"{new['temp']}°C {WMO.get(new['code'], '')}")
+        else:
+            weather_ref['fail_count'] += 1
 
     threading.Thread(target=_fetch, daemon=True).start()
 
 
-def fetch_earth_async(earth_ref, meta, index, total):
-    """Async wrapper for Earth photo fetching – downloads one photo by metadata"""
+def fetch_earth_async(earth_ref, meta, index, total, target_hour):
+    """Async wrapper for Earth photo fetching – downloads one photo by metadata.
+    Only advances last_photo_hour on success, so a failed download retries
+    with backoff instead of waiting a full hour for the next attempt."""
     def _fetch():
         log.info(f"Fetching Earth photo {index}/{total} (async)...")
         new_earth = fetch_earth_photo(meta, index, total)
         if new_earth['ok']:
             earth_ref['data'] = new_earth
-            earth_ref['last_fetch'] = time.time()
+            earth_ref['last_photo_hour'] = target_hour
+            earth_ref['photo_fail_count'] = 0
             log.info(f"Earth photo {index}/{total} updated: {new_earth['date']}")
+        else:
+            earth_ref['photo_fail_count'] += 1
 
     threading.Thread(target=_fetch, daemon=True).start()
 
@@ -650,9 +861,7 @@ def main():
     last_activity = time.time()
     is_dimmed = False
     was_night_dim = False  # tracks whether last dim used night-off (duty=0)
-    screens_swapped = False
-    last_swap_time = time.time()
-    current_page = 'weather'  # 'weather' or 'earth'
+    current_page = 'weather'  # one of PAGES: 'weather' / 'earth' / 'moon'
 
     log.info("Initialising displays...")
     disp_main = LCD_1inch3.LCD_1inch3(
@@ -680,21 +889,24 @@ def main():
     key1 = DigitalInputDevice(KEY1_PIN, pull_up=None, active_state=True, pin_factory=_button_factory)
     key2 = DigitalInputDevice(KEY2_PIN, pull_up=None, active_state=True, pin_factory=_button_factory)
 
-    # Data references for async fetching (Trick #4)
-    weather_ref = {'data': {'ok': False}, 'last_fetch': 0}
+    # Data references for async fetching (Trick #4). Warm-start weather from
+    # the last successful fetch so a restart shows real data, not "No Data".
+    weather_ref = {'data': _load_weather_cache(), 'last_attempt': 0, 'fail_count': 0}
     earth_ref = {
         'data': {'ok': False},
-        'last_fetch': 0,
         'photos_list': [],       # Metadata for up to MAX_EARTH_PHOTOS images
-        'last_list_fetch': 0,    # When the photo list was last refreshed
-        'last_photo_hour': -1,   # Hour index of the last downloaded photo
+        'list_last_attempt': 0,  # When the photo list was last attempted
+        'list_fail_count': 0,
+        'last_photo_hour': -1,   # Hour index of the last successfully downloaded photo
+        'photo_last_attempt': 0,
+        'photo_fail_count': 0,
     }
 
     # Trick #8: Dirty Flag Rendering - state tracking to skip unnecessary renders
     last_render_state = {'hash': None, 'time': None}
     last_displayed_page = None
 
-    def compute_state_hash(weather, earth_data, wifi, swapped):
+    def compute_state_hash(weather, earth_data, wifi):
         """Compute hash of visible state for dirty flag detection (Trick #8)"""
         weather_tuple = (
             weather.get('temp'),
@@ -718,7 +930,9 @@ def main():
             earth_data.get('lon'),
             earth_data.get('index'),
         )
-        return (weather_tuple, earth_tuple, wifi, swapped)
+        # Include today's date so the moon page still refreshes once daily
+        # even if weather/earth data happens to be unchanged across midnight.
+        return (weather_tuple, earth_tuple, wifi, time.strftime('%Y-%m-%d'))
 
     # Trick #5 & #8: Double Buffering with Dirty Flag - only render when state changes
     def update_frame_buffers():
@@ -736,7 +950,7 @@ def main():
             earth_data = earth_ref['data']
 
             # Compute current state hash (data only — time tracked separately)
-            current_state = compute_state_hash(weather, earth_data, wifi, screens_swapped)
+            current_state = compute_state_hash(weather, earth_data, wifi)
             current_time = time.strftime("%H:%M")
 
             data_changed = (current_state != last_render_state['hash'])
@@ -747,25 +961,30 @@ def main():
 
                 # Render weather page
                 frame_buffers['weather']['main'] = render_main(weather, wifi)
-                if screens_swapped:
-                    frame_buffers['weather']['left'] = render_sun_times(weather, wifi)
-                    frame_buffers['weather']['right'] = render_humidity_wind(weather, wifi)
-                else:
-                    frame_buffers['weather']['left'] = render_humidity_wind(weather, wifi)
-                    frame_buffers['weather']['right'] = render_sun_times(weather, wifi)
+                frame_buffers['weather']['left'] = render_humidity_wind(weather, wifi)
+                frame_buffers['weather']['right'] = render_sun_times(weather, wifi)
 
                 # Render earth page
                 frame_buffers['earth']['main'] = render_main_earth(earth_data)
                 frame_buffers['earth']['left'] = render_left_earth(earth_data)
                 frame_buffers['earth']['right'] = render_right_earth(earth_data)
 
+                # Render moon page (pure local math, negligible cost)
+                frame_buffers['moon']['main'] = render_main_moon()
+                frame_buffers['moon']['left'] = render_left_moon()
+                frame_buffers['moon']['right'] = render_right_moon()
+
                 last_render_state['hash'] = current_state
                 last_render_state['time'] = current_time
                 return 'data'
 
             elif time_changed:
-                # Only the clock changed: re-render main weather screen only.
-                # Side screens show humidity/wind/sunrise — they have no clock, no need to flicker.
+                # Only the clock changed. Nothing but the weather page's main
+                # screen shows a clock, and there's no point rendering into a
+                # blacked-out/dimmed display or a page that isn't even shown —
+                # the SPI push is already gated the same way below.
+                if current_page != 'weather' or is_dimmed:
+                    return False
                 log.debug("Rendering: time-only change, main screen only")
                 frame_buffers['weather']['main'] = render_main(weather, wifi)
                 last_render_state['time'] = current_time
@@ -794,7 +1013,7 @@ def main():
 
     def key2_callback():
         nonlocal current_page, last_activity
-        current_page = 'earth' if current_page == 'weather' else 'weather'
+        current_page = PAGES[(PAGES.index(current_page) + 1) % len(PAGES)]
         last_activity = time.time()
         log.info(f"✓ KEY2 pressed - switched to {current_page} page")
         # Trick #1: Immediate render on button press - no waiting for loop!
@@ -806,9 +1025,8 @@ def main():
 
     log.info("Weather station ready! (Burn-in protection + OPTIMIZATIONS enabled)")
     log.info(f"- Auto-dim after {DIM_TIMEOUT}s")
-    log.info(f"- Screen swap every {SWAP_INTERVAL}s")
     log.info(f"- NASA EPIC: rotating {MAX_EARTH_PHOTOS} images, one per hour")
-    log.info(f"- Press KEY2 to cycle between weather and Earth photo")
+    log.info(f"- Press KEY2 to cycle: {' → '.join(PAGES)}")
     log.info("✓ Buttons ready using Waveshare GPIO library")
     log.info("✓ OPTIMIZATIONS: Image caching, WiFi caching, async fetching, double buffering,")
     log.info("✓                dirty flag rendering, cache invalidation, instant page switching")
@@ -822,41 +1040,47 @@ def main():
             now = time.time()
             loop_count += 1
 
-            # Trick #4: Async fetch weather data (every 300s = 60 cycles at 5s interval)
-            if now - weather_ref['last_fetch'] >= UPDATE_SECONDS or weather_ref['last_fetch'] == 0:
-                fetch_weather_async(weather_ref, None)
+            # Trick #4: Async fetch weather data (every UPDATE_SECONDS, backing off on failure).
+            # last_attempt is stamped here — synchronously, before spawning — so the gate
+            # updates immediately rather than only after the network call finishes; otherwise
+            # a slow/failing fetch lets this 5s loop spawn a new thread every tick forever.
+            weather_interval = _backoff_seconds(weather_ref['fail_count'], UPDATE_SECONDS)
+            if now - weather_ref['last_attempt'] >= weather_interval:
+                weather_ref['last_attempt'] = now
+                fetch_weather_async(weather_ref)
 
             # 12-image hourly rotation: refresh photo list every 12h, rotate photo each hour
             current_hour = int(now // 3600)
-            if (now - earth_ref['last_list_fetch'] >= UPDATE_LIST_SECONDS
-                    or not earth_ref['photos_list']):
-                earth_ref['last_list_fetch'] = now  # set immediately to prevent duplicate spawns
+            list_interval = _backoff_seconds(earth_ref['list_fail_count'], UPDATE_LIST_SECONDS)
+            if now - earth_ref['list_last_attempt'] >= list_interval:
+                earth_ref['list_last_attempt'] = now  # set immediately to prevent duplicate spawns
                 def _refresh_list(ref=earth_ref):
                     new_list = fetch_photos_list()
                     if new_list:
                         ref['photos_list'] = new_list
                         ref['last_photo_hour'] = -1  # force photo reload on new list
+                        ref['list_fail_count'] = 0
                         log.info(f"Photo list refreshed: {len(new_list)} images available")
+                    else:
+                        ref['list_fail_count'] += 1
                 threading.Thread(target=_refresh_list, daemon=True).start()
 
             if earth_ref['photos_list'] and current_hour != earth_ref['last_photo_hour']:
-                photos = earth_ref['photos_list']
-                idx = current_hour % len(photos)
-                human_idx = idx + 1
-                total = len(photos)
-                earth_ref['last_photo_hour'] = current_hour
-                fetch_earth_async(earth_ref, photos[idx], human_idx, total)
-
-            # Check for screen swap
-            if now - last_swap_time >= SWAP_INTERVAL:
-                screens_swapped = not screens_swapped
-                last_swap_time = now
-                log.info(f"Swapping screens (now: {'swapped' if screens_swapped else 'normal'})")
+                # Retry within the hour with backoff on failure, rather than
+                # stamping last_photo_hour up front and stalling a full hour.
+                photo_interval = _backoff_seconds(earth_ref['photo_fail_count'], 3600)
+                if now - earth_ref['photo_last_attempt'] >= photo_interval:
+                    earth_ref['photo_last_attempt'] = now
+                    photos = earth_ref['photos_list']
+                    idx = current_hour % len(photos)
+                    human_idx = idx + 1
+                    total = len(photos)
+                    fetch_earth_async(earth_ref, photos[idx], human_idx, total, current_hour)
 
             # Check for auto-dim / night schedule
             inactive_time = now - last_activity
             should_be_dimmed = inactive_time >= DIM_TIMEOUT
-            is_night = 0 <= time.localtime(now).tm_hour < 7
+            is_night = NIGHT_START_HOUR <= time.localtime(now).tm_hour < NIGHT_END_HOUR
 
             if should_be_dimmed:
                 # Re-apply if not yet dimmed, or night status changed while dimmed
