@@ -702,7 +702,7 @@ def render_right_earth(earth_data):
 #  MOON PHASE — pure local calendar math, no network call
 # ══════════════════════════════════════════════════════════════════════════════
 SYNODIC_MONTH = 29.530588861  # days per lunar cycle
-_KNOWN_NEW_MOON = 946_845_240  # 2000-01-06 18:14 UTC, a reference new moon (unix epoch)
+_KNOWN_NEW_MOON = 947_182_440  # 2000-01-06 18:14 UTC, a reference new moon (unix epoch)
 
 def moon_phase(t=None):
     """Return (phase_name, illumination 0-1, days_into_cycle) for time t (default: now)."""
